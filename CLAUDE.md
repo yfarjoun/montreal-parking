@@ -29,16 +29,19 @@ pixi run -e dev typecheck       # run mypy (strict mode)
 
 Tool configuration (pytest, ruff, mypy) lives in `pyproject.toml`.
 
-## How It Works (Pipeline)
+## Code Structure
 
-`main.py` is a single-file pipeline with these steps:
+`main.py` orchestrates the pipeline. Logic lives in the `montreal_parking/` package:
 
-1. **Download** — fetches three datasets from donnees.montreal.ca into `data/` (cached on disk)
-2. **Load** — reads signage CSV and geobase GeoJSON
-3. **Classify** — regex-based sign classification into: `no_parking`, `permit`, `paid`, `time_limited`, `street_cleaning`, `unrestricted`, `panonceau`, `other`
-4. **Snap poles to roads** — spatial join (sjoin_nearest) in metric CRS (EPSG:32188), computes projection distance along road and left/right side via cross product
-5. **Reconstruct intervals** — walks poles in chainage order per (road, side), uses arrow codes to determine which signs govern each interval, fills gaps for unsigned sides and short connector segments
-6. **Build map** — Folium map with layers for free/time-limited/restricted/no-data intervals, plus pole markers with Street View links
+| Module         | Responsibility                                                                                                                            |
+|----------------|-------------------------------------------------------------------------------------------------------------------------------------------|
+| `constants.py` | URLs, CRS strings, file paths, colors, thresholds                                                                                         |
+| `data.py`      | Download datasets and load signage CSV / geobase GeoJSON                                                                                  |
+| `classify.py`  | Regex-based sign classification → `no_parking`, `permit`, `paid`, `time_limited`, `street_cleaning`, `unrestricted`, `panonceau`, `other` |
+| `snap.py`      | Spatial join (sjoin_nearest) in metric CRS, projection distance, left/right side via cross product, DEUX COTES duplication                |
+| `intervals.py` | Walk poles in chainage order per (road, side), arrow-based interval classification, gap filling                                           |
+| `map.py`       | Folium map with category layers, pole markers, Street View links                                                                          |
+| `stats.py`     | Summary statistics printing                                                                                                               |
 
 ## Key Design Decisions
 

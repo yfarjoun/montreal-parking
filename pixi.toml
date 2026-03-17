@@ -23,7 +23,7 @@ types-requests = ">=2.32.4.20260107,<3"
 test = "pytest tests/"
 lint = "ruff check ."
 format = "ruff format ."
-typecheck = "mypy main.py"
+typecheck = "mypy main.py montreal_parking/"
 
 [environments]
 dev = ["dev"]

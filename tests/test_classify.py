@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from main import classify_sign, is_restrictive
+from montreal_parking.classify import classify_sign, is_restrictive
 
 # ---------------------------------------------------------------------------
 # classify_sign

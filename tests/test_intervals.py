@@ -10,11 +10,9 @@ import geopandas as gpd
 import pandas as pd
 from shapely.geometry import LineString
 
-from main import (
-    CRS_MTM8,
-    reconstruct_intervals,
-    snap_poles_to_roads,
-)
+from montreal_parking.constants import CRS_MTM8
+from montreal_parking.intervals import reconstruct_intervals
+from montreal_parking.snap import snap_poles_to_roads
 
 
 def _make_road(
