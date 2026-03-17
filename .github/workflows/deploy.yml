@@ -34,6 +34,8 @@ jobs:
 
       - name: Build map (all Montreal)
         run: pixi run build
+        env:
+          PYTHONUNBUFFERED: "1"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
