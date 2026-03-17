@@ -12,6 +12,9 @@ CRS_MTM8 = "EPSG:32188"  # NAD83 MTM zone 8, metric CRS for Montreal
 
 MAX_SNAP_DISTANCE_M = 20.0
 
+# Edge intervals shorter than this are too close to an intersection to be free parking
+MIN_FREE_EDGE_M = 5.0
+
 URLS = {
     "signage": (
         "https://donnees.montreal.ca/dataset/"

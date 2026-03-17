@@ -8,7 +8,7 @@ import geopandas as gpd
 import pandas as pd
 from shapely.ops import substring
 
-from montreal_parking.constants import CRS_MTM8
+from montreal_parking.constants import CRS_MTM8, MIN_FREE_EDGE_M
 
 
 def _get_signs_for_direction(
@@ -93,6 +93,9 @@ def _build_side_intervals(
     first_dist = first_pole["projection_distance"]
     if first_dist > 1.0:
         cat, descs = _classify_interval(_get(first_id, "backward"))
+        # Short edges near intersections can't be free parking
+        if cat == "free" and first_dist < MIN_FREE_EDGE_M:
+            cat = "no_data"
         iv = _make_interval(0, first_dist, cat, descs, road_geom, id_trc, side, street_name)
         if iv:
             intervals.append(iv)
@@ -114,8 +117,12 @@ def _build_side_intervals(
     last_pole = pole_data.iloc[-1]
     last_id = last_pole["POTEAU_ID_POT"]
     last_dist = last_pole["projection_distance"]
-    if road_geom.length - last_dist > 1.0:
+    tail_length = road_geom.length - last_dist
+    if tail_length > 1.0:
         cat, descs = _classify_interval(_get(last_id, "forward"))
+        # Short edges near intersections can't be free parking
+        if cat == "free" and tail_length < MIN_FREE_EDGE_M:
+            cat = "no_data"
         iv = _make_interval(last_dist, road_geom.length, cat, descs, road_geom, id_trc, side, street_name)
         if iv:
             intervals.append(iv)
