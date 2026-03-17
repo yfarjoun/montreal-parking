@@ -344,3 +344,72 @@ class TestReconstructIntervals:
         right = intervals[intervals["side"] == "right"]
         # Both before and after the pole should be restricted (arrow 0 = both)
         assert all(right["category"] == "restricted")
+
+    def test_short_free_edge_becomes_no_data(self) -> None:
+        """A short (<5m) edge interval that would be 'free' should become 'no_data'.
+
+        This prevents false free-parking near intersections (e.g. Boyer/Généreux).
+        Pole at 3m with forward-only arrow: backward direction has no signs,
+        so the 0-3m edge would be classified 'free' — but it's too short.
+        """
+        roads = _make_road(length=100)
+        signs = _make_snapped_signs([{
+            "POTEAU_ID_POT": 1,
+            "projection_distance": 3.0,
+            "side": "right",
+            "ID_TRC": 1,
+            "DESCRIPTION_RPA": "\\P",
+            "FLECHE_PAN": 2,  # right side: 2=forward (points away from 0m edge)
+            "sign_category": "no_parking",
+            "is_restrictive": True,
+            "NOM_VOIE": "Rue Test",
+        }])
+        intervals = reconstruct_intervals(signs, roads)
+        right = intervals[intervals["side"] == "right"]
+        edge = right[right["start_dist"] == 0]
+        assert len(edge) == 1
+        assert edge.iloc[0]["category"] == "no_data"
+
+    def test_short_free_tail_becomes_no_data(self) -> None:
+        """A short (<5m) tail edge that would be 'free' should become 'no_data'."""
+        roads = _make_road(length=100)
+        # Pole at 97m with backward-only arrow: forward direction has no signs,
+        # so the 97-100m tail would be 'free' — but it's too short.
+        signs = _make_snapped_signs([{
+            "POTEAU_ID_POT": 1,
+            "projection_distance": 97.0,
+            "side": "right",
+            "ID_TRC": 1,
+            "DESCRIPTION_RPA": "\\P",
+            "FLECHE_PAN": 3,  # right side: 3=backward (points away from 100m edge)
+            "sign_category": "no_parking",
+            "is_restrictive": True,
+            "NOM_VOIE": "Rue Test",
+        }])
+        intervals = reconstruct_intervals(signs, roads)
+        right = intervals[intervals["side"] == "right"]
+        tail = right[right["end_dist"] >= 99]
+        assert len(tail) == 1
+        assert tail.iloc[0]["category"] == "no_data"
+
+    def test_long_free_edge_stays_free(self) -> None:
+        """A longer (>=5m) edge interval that's 'free' should remain free."""
+        roads = _make_road(length=100)
+        # Pole at 10m with forward-only arrow: backward has no signs,
+        # so edge 0-10m is 'free' and long enough to stay free.
+        signs = _make_snapped_signs([{
+            "POTEAU_ID_POT": 1,
+            "projection_distance": 10.0,
+            "side": "right",
+            "ID_TRC": 1,
+            "DESCRIPTION_RPA": "\\P",
+            "FLECHE_PAN": 2,  # right side: 2=forward (points away from 0m edge)
+            "sign_category": "no_parking",
+            "is_restrictive": True,
+            "NOM_VOIE": "Rue Test",
+        }])
+        intervals = reconstruct_intervals(signs, roads)
+        right = intervals[intervals["side"] == "right"]
+        edge = right[right["start_dist"] == 0]
+        assert len(edge) == 1
+        assert edge.iloc[0]["category"] == "free"
