@@ -175,6 +175,7 @@ def _build_html_shell(
   <title>Montreal Free Parking Finder</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <link rel="stylesheet" href="https://unpkg.com/leaflet.locatecontrol@0.82.0/dist/L.Control.Locate.min.css"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder@2.4.0/dist/Control.Geocoder.css"/>
   <style>
     html, body {{ margin: 0; padding: 0; height: 100%; }}
     #map {{ width: 100%; height: 100%; }}
@@ -184,6 +185,7 @@ def _build_html_shell(
   <div id="map"></div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet.locatecontrol@0.82.0/dist/L.Control.Locate.min.js"></script>
+  <script src="https://unpkg.com/leaflet-control-geocoder@2.4.0/dist/Control.Geocoder.js"></script>
   <script>
     var map = L.map('map').setView({center}, {zoom});
     L.tileLayer('{TILES_URL}', {{
@@ -201,6 +203,20 @@ def _build_html_shell(
       strings: {{ title: "Show my location" }}
     }}).addTo(map);
 
+    // Address search bar (Nominatim geocoder, biased to Montreal)
+    L.Control.geocoder({{
+      defaultMarkGeocode: false,
+      placeholder: 'Search address...',
+      geocoder: L.Control.Geocoder.nominatim({{
+        geocodingQueryParams: {{ viewbox: '-73.97,45.40,-73.47,45.70', bounded: 1 }}
+      }})
+    }}).on('markgeocode', function(e) {{
+      var bb = e.geocode.bbox;
+      map.fitBounds(bb || e.geocode.center.toBounds(200));
+      L.marker(e.geocode.center).addTo(map)
+        .bindPopup(e.geocode.name).openPopup();
+    }}).addTo(map);
+
 {layers_init}
 
 {default_adds}
@@ -208,6 +224,41 @@ def _build_html_shell(
     L.control.layers(null, {{
 {overlays_obj}
     }}, {{collapsed: false}}).addTo(map);
+
+    // --- Droppable pin + shareable URL ---
+    var droppedPin = null;
+
+    // Restore pin and view from URL hash: #lat,lng,zoom or #lat,lng
+    function restoreFromHash() {{
+      var h = window.location.hash.replace('#', '');
+      if (!h) return;
+      var parts = h.split(',').map(Number);
+      if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {{
+        var lat = parts[0], lng = parts[1], z = parts[2] || {zoom};
+        map.setView([lat, lng], z);
+        placePin(lat, lng);
+      }}
+    }}
+
+    function placePin(lat, lng) {{
+      if (droppedPin) map.removeLayer(droppedPin);
+      var shareUrl = window.location.origin + window.location.pathname
+        + '#' + lat.toFixed(5) + ',' + lng.toFixed(5) + ',' + map.getZoom();
+      var popupHtml = '<b>Dropped pin</b><br>'
+        + '<a href="' + shareUrl + '" onclick="navigator.clipboard'
+        + '.writeText(this.href);this.textContent=\\'Copied!\\';'
+        + 'return false;">Copy share link</a>';
+      droppedPin = L.marker([lat, lng]).addTo(map)
+        .bindPopup(popupHtml).openPopup();
+      window.location.hash = lat.toFixed(5) + ','
+        + lng.toFixed(5) + ',' + map.getZoom();
+    }}
+
+    map.on('click', function(e) {{
+      placePin(e.latlng.lat, e.latlng.lng);
+    }});
+
+    restoreFromHash();
   </script>
 </body>
 </html>"""
