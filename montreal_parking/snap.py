@@ -2,10 +2,50 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import geopandas as gpd
+import numpy as np
 import pandas as pd
+import shapely
 
 from montreal_parking.constants import CRS_MTM8, CRS_WGS84, MAX_SNAP_DISTANCE_M
+
+
+def _compute_projection_and_side(
+    joined: gpd.GeoDataFrame,
+    road_geoms: pd.Series[Any],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorized projection distance and side computation.
+
+    Returns (projection_distances, sides) arrays aligned with ``joined``.
+    """
+    # Build aligned arrays of road geometries and pole points
+    road_geom_array = np.array([road_geoms.loc[id_trc] for id_trc in joined["ID_TRC"]])
+    pole_point_array = joined.geometry.values
+
+    # Projection distances along road (shapely.line_locate_point = vectorized .project())
+    proj_distances = shapely.line_locate_point(road_geom_array, pole_point_array)
+
+    # Tangent vectors via interpolation at proj ± 1m
+    road_lengths = shapely.length(road_geom_array)
+    p1 = shapely.line_interpolate_point(road_geom_array, np.maximum(0, proj_distances - 1))
+    p2 = shapely.line_interpolate_point(road_geom_array, np.minimum(road_lengths, proj_distances + 1))
+
+    # Road points at projection
+    road_points = shapely.line_interpolate_point(road_geom_array, proj_distances)
+
+    # Tangent vector (tx, ty) and pole offset vector (dx, dy)
+    tx = shapely.get_x(p2) - shapely.get_x(p1)
+    ty = shapely.get_y(p2) - shapely.get_y(p1)
+    dx = shapely.get_x(pole_point_array) - shapely.get_x(road_points)
+    dy = shapely.get_y(pole_point_array) - shapely.get_y(road_points)
+
+    # Cross product: positive = left, negative = right
+    cross = tx * dy - ty * dx
+    sides = np.where(cross >= 0, "left", "right")
+
+    return proj_distances, sides
 
 
 def snap_poles_to_roads(
@@ -56,33 +96,15 @@ def snap_poles_to_roads(
     joined = joined.dropna(subset=["ID_TRC"])
     joined["ID_TRC"] = joined["ID_TRC"].astype(int)
 
-    # Compute projection distance along road and side
+    # Compute projection distance along road and side (vectorized)
     road_geoms = roads_mtm.set_index("ID_TRC")["geometry"]
-
-    proj_distances = []
-    sides = []
-    for _, row in joined.iterrows():
-        road_geom = road_geoms.loc[row["ID_TRC"]]
-        pole_point = row.geometry
-        proj_dist = road_geom.project(pole_point)
-        proj_distances.append(proj_dist)
-
-        # Determine side: interpolate point on road at projection distance,
-        # compute cross product with road tangent to determine left/right
-        road_point = road_geom.interpolate(proj_dist)
-        # Get tangent direction at this point
-        p1 = road_geom.interpolate(max(0, proj_dist - 1))
-        p2 = road_geom.interpolate(min(road_geom.length, proj_dist + 1))
-        # tangent vector
-        tx, ty = p2.x - p1.x, p2.y - p1.y
-        # vector from road to pole
-        dx, dy = pole_point.x - road_point.x, pole_point.y - road_point.y
-        # cross product: positive = left, negative = right
-        cross = tx * dy - ty * dx
-        sides.append("left" if cross >= 0 else "right")
-
-    joined["projection_distance"] = proj_distances
-    joined["side"] = sides
+    if joined.empty:
+        joined["projection_distance"] = pd.Series(dtype=float)
+        joined["side"] = pd.Series(dtype=str)
+    else:
+        proj_distances, sides = _compute_projection_and_side(joined, road_geoms)
+        joined["projection_distance"] = proj_distances
+        joined["side"] = sides
 
     # Merge back to all signs (a pole can have multiple signs)
     result = signs_df.merge(

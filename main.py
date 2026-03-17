@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
+
 from montreal_parking.classify import classify_all_signs
-from montreal_parking.constants import DATA_DIR, FILENAMES, OUTPUT_DIR, PLATEAU_FILTER
+from montreal_parking.constants import DATA_DIR, FILENAMES, OUTPUT_DIR
 from montreal_parking.data import download_data, load_geobase, load_signage
 from montreal_parking.intervals import reconstruct_intervals
 from montreal_parking.map import build_map
@@ -11,7 +13,21 @@ from montreal_parking.snap import snap_poles_to_roads
 from montreal_parking.stats import print_stats
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Montreal Free Parking Finder")
+    parser.add_argument(
+        "--borough",
+        type=str,
+        default=None,
+        help="Filter to a specific borough (substring match on NOM_ARROND). "
+        "Default: all Montreal.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = _parse_args()
+
     print("Step 1: Downloading data...")
     download_data()
 
@@ -25,12 +41,12 @@ def main() -> None:
     for cat, count in signs_df["sign_category"].value_counts().items():
         print(f"    {cat}: {count}")
 
-    # Filter to Le Plateau for MVP
-    print("\n  Filtering to Le Plateau-Mont-Royal...")
-    signs_df = signs_df[
-        signs_df["NOM_ARROND"].str.contains(PLATEAU_FILTER, case=False, na=False)
-    ]
-    print(f"  {len(signs_df)} signs in Le Plateau")
+    if args.borough:
+        print(f"\n  Filtering to borough matching '{args.borough}'...")
+        signs_df = signs_df[
+            signs_df["NOM_ARROND"].str.contains(args.borough, case=False, na=False)
+        ]
+        print(f"  {len(signs_df)} signs after filter")
 
     print("\nStep 4: Loading geobase and snapping poles to roads...")
     roads_gdf = load_geobase(DATA_DIR / FILENAMES["geobase"])
@@ -47,10 +63,8 @@ def main() -> None:
 
     print("\nStep 6: Building map...")
     OUTPUT_DIR.mkdir(exist_ok=True)
-    m = build_map(intervals, signs_df, unsnapped)
-    output_path = OUTPUT_DIR / "montreal_free_parking.html"
-    m.save(str(output_path))
-    print(f"  Map saved to {output_path}")
+    build_map(intervals, signs_df, unsnapped, borough=args.borough)
+    print(f"  Map saved to {OUTPUT_DIR}/")
 
 
 if __name__ == "__main__":

@@ -2,15 +2,20 @@
 authors = ["Yossi Farjoun <yossi@fulcrumgenomics.com>"]
 channels = ["conda-forge"]
 name = "montreal_parking"
-platforms = ["osx-arm64"]
+platforms = ["osx-arm64", "linux-64"]
 version = "0.1.0"
 
 [dependencies]
 pandas = ">=3.0.1,<4"
 geopandas = ">=1.1.3,<2"
 shapely = ">=2.1.2,<3"
+numpy = ">=1.26,<3"
 folium = ">=0.20.0,<0.21"
 requests = ">=2.32.5,<3"
+
+[tasks]
+build = "python main.py"
+build-plateau = "python main.py --borough Plateau"
 
 [feature.dev.dependencies]
 pytest = ">=8,<9"

@@ -45,8 +45,17 @@ COLOR_TIME_LIMITED = "#f1c40f"  # yellow
 COLOR_RESTRICTED = "#e74c3c"  # red
 COLOR_NO_DATA = "#9b59b6"  # purple
 
-# Borough filter for MVP
-PLATEAU_FILTER = "Plateau"
+# Default map centre (Montreal city centre)
+MAP_CENTER = [45.5017, -73.5673]
+MAP_ZOOM_DEFAULT = 12
+MAP_ZOOM_BOROUGH = 14
 
-# Google Maps-style tiles
-GOOGLE_TILES = "https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}"
+# Tile provider (CartoDB Positron — clean, free, no ToS issues)
+TILES_URL = "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
+TILES_ATTR = (
+    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> '
+    'contributors &copy; <a href="https://carto.com/">CARTO</a>'
+)
+
+# Geometry simplification tolerance for GeoJSON export (≈5 m in WGS84 degrees)
+SIMPLIFY_TOLERANCE = 0.00005
