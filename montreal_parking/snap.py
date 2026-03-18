@@ -114,11 +114,17 @@ def snap_poles_to_roads(
     )
 
     # Duplicate "DEUX COTES" signs to the opposite side of the road
+    result["is_deux_cotes_copy"] = False
     deux_cotes = result[
         result["DESCRIPTION_RPA"].str.contains("DEUX C", case=False, na=False)
     ].copy()
     if not deux_cotes.empty:
         deux_cotes["side"] = deux_cotes["side"].map({"left": "right", "right": "left"})
+        # Flip directional arrows: left(2)/right(3) are relative to the viewer
+        # facing the sign, so they swap when crossing to the opposite side.
+        arrow_flip = {2: 3, 3: 2, 0: 0}
+        deux_cotes["FLECHE_PAN"] = deux_cotes["FLECHE_PAN"].map(arrow_flip).fillna(0).astype(int)
+        deux_cotes["is_deux_cotes_copy"] = True
         result = pd.concat([result, deux_cotes], ignore_index=True)
         print(f"  Duplicated {len(deux_cotes)} 'DEUX COTES' signs to opposite side")
 
