@@ -63,7 +63,7 @@ def main() -> None:
 
     print("\nStep 6: Building map...")
     OUTPUT_DIR.mkdir(exist_ok=True)
-    build_map(intervals, signs_df, unsnapped, borough=args.borough)
+    build_map(intervals, snapped, unsnapped, roads_gdf=roads_gdf, borough=args.borough)
     print(f"  Map saved to {OUTPUT_DIR}/")
 
 

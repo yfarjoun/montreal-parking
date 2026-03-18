@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
+import shapely
 
 from montreal_parking.constants import (
     COLOR_FREE,
@@ -64,17 +66,24 @@ def _build_pole_geojson(
     signs_df: pd.DataFrame,
     dest: Path,
     label_prefix: str = "Pole",
+    *,
+    group_by_side: bool = False,
 ) -> bool:
     """Export pole markers as GeoJSON with popup HTML. Returns True if non-empty."""
     if signs_df.empty:
         return False
 
+    arrow_display = {0: "", 2: "\u2190 ", 3: "\u2192 "}
+
+    has_side = group_by_side and "side" in signs_df.columns
+    group_cols: list[str] = ["POTEAU_ID_POT", "side"] if has_side else ["POTEAU_ID_POT"]
+
     sign_html: dict[Any, str] = (
-        signs_df.groupby("POTEAU_ID_POT")
+        signs_df.groupby(group_cols)
         .apply(  # type: ignore[call-overload]
             lambda g: "<br>".join(
-                f"[{row['FLECHE_PAN']}] {row['sign_category']}: "
-                + html.escape(str(row["DESCRIPTION_RPA"]).replace("\\", "\\\\"))
+                f"{arrow_display.get(row['FLECHE_PAN'], '')} {row['sign_category']}: "
+                + html.escape(str(row["DESCRIPTION_RPA"]))
                 for _, row in g.iterrows()
             ),
             include_groups=False,
@@ -82,15 +91,17 @@ def _build_pole_geojson(
         .to_dict()
     )
 
-    unique = signs_df.drop_duplicates(subset="POTEAU_ID_POT")
+    unique = signs_df.drop_duplicates(subset=group_cols)
     features = []
     for _, row in unique.iterrows():
         pid = row["POTEAU_ID_POT"]
+        key = (pid, row["side"]) if has_side else pid
         lat, lon = float(row["Latitude"]), float(row["Longitude"])
         sv_url = f"https://www.google.com/maps/@?api=1&map_action=pano&viewpoint={lat},{lon}"
+        side_label = f" ({row['side']})" if has_side else ""
         popup = (
-            f"<b>{label_prefix} {pid}</b><br>"
-            f"{sign_html.get(pid, '')}<br>"
+            f"<b>{label_prefix} {pid}{side_label}</b><br>"
+            f"{sign_html.get(key, '')}<br>"
             f'<a href="{sv_url}" target="_blank">Street View</a>'
         )
         features.append({
@@ -105,63 +116,109 @@ def _build_pole_geojson(
     return True
 
 
+def _offset_deux_cotes_copies(
+    copies: pd.DataFrame,
+    roads_gdf: gpd.GeoDataFrame,
+) -> pd.DataFrame:
+    """Compute offset Lat/Lon for DEUX COTES copies on the opposite side of the road.
+
+    Interpolates along the road at the copy's projection distance, then offsets
+    6m perpendicular to the road in the direction of the copy's (flipped) side.
+    """
+    from montreal_parking.constants import CRS_MTM8, CRS_WGS84
+
+    roads_mtm = roads_gdf.to_crs(CRS_MTM8)
+    road_geoms = roads_mtm.set_index("ID_TRC")["geometry"]
+
+    result = copies.copy()
+    lats = np.empty(len(result))
+    lons = np.empty(len(result))
+
+    for i, (_, row) in enumerate(result.iterrows()):
+        id_trc = row["ID_TRC"]
+        if id_trc not in road_geoms.index:
+            lats[i], lons[i] = row["Latitude"], row["Longitude"]
+            continue
+        road = road_geoms.loc[id_trc]
+        proj = min(row["projection_distance"], road.length)
+        road_pt = shapely.line_interpolate_point(road, proj)
+
+        # Tangent vector
+        p1 = shapely.line_interpolate_point(road, max(0, proj - 1))
+        p2 = shapely.line_interpolate_point(road, min(road.length, proj + 1))
+        tx = shapely.get_x(p2) - shapely.get_x(p1)
+        ty = shapely.get_y(p2) - shapely.get_y(p1)
+        length = np.sqrt(tx * tx + ty * ty)
+        if length < 0.01:
+            lats[i], lons[i] = row["Latitude"], row["Longitude"]
+            continue
+
+        # Perpendicular unit vector (left = +normal, right = -normal)
+        nx, ny = -ty / length, tx / length
+        offset = 3.0 if row["side"] == "left" else -3.0
+        offset_x = shapely.get_x(road_pt) + nx * offset
+        offset_y = shapely.get_y(road_pt) + ny * offset
+
+        # Convert back to WGS84
+        pt = gpd.GeoSeries(
+            [shapely.Point(offset_x, offset_y)], crs=CRS_MTM8
+        ).to_crs(CRS_WGS84).iloc[0]
+        lons[i], lats[i] = pt.x, pt.y
+
+    result["Latitude"] = lats
+    result["Longitude"] = lons
+    return result
+
+
 def _build_html_shell(
     layers: list[dict[str, Any]],
     center: list[float],
     zoom: int,
 ) -> str:
     """Generate a lightweight HTML page that loads GeoJSON via fetch()."""
-    # Build JS layer definitions
-    layer_js_parts = []
+    # Build per-layer JS: fetch GeoJSON, store raw data, render on viewport change
+    layer_fetch_parts = []
     overlay_js_parts = []
+    layer_keys = []
     for layer in layers:
         var = layer["var"]
         file = layer["file"]
         name = layer["name"]
         color = layer["color"]
-        default_on = layer["default_on"]
         is_point = layer.get("is_point", False)
 
-        if is_point:
-            layer_js_parts.append(f"""
+        layer_keys.append(var)
+
+        opts = (
+            f"pointToLayer: function(f, ll) {{"
+            f" return L.circleMarker(ll, {{radius:3,color:'{color}',"
+            f"fillColor:'{color}',fillOpacity:0.7}}); }}"
+            if is_point
+            else f"style: {{color:'{color}',weight:5,opacity:0.8,lineCap:'butt'}}"
+        )
+
+        layer_fetch_parts.append(f"""
     // {name}
-    var {var} = L.layerGroup();
+    layerData['{var}'] = null;
+    layerGroups['{var}'] = L.layerGroup();
     fetch('data/{file}')
-      .then(r => r.json())
-      .then(data => {{
-        L.geoJSON(data, {{
-          pointToLayer: function(f, ll) {{
-            return L.circleMarker(ll, {{radius: 3, color: '{color}', fillColor: '{color}', fillOpacity: 0.7}});
-          }},
+      .then(function(r) {{ return r.json(); }})
+      .then(function(data) {{
+        layerData['{var}'] = data;
+        layerOpts['{var}'] = {{ {opts},
           onEachFeature: function(f, layer) {{
-            if (f.properties && f.properties.popup_html) layer.bindPopup(f.properties.popup_html, {{maxWidth: 400}});
+            if (f.properties && f.properties.popup_html)
+              layer.bindPopup(f.properties.popup_html, {{maxWidth:400}});
           }}
-        }}).addTo({var});
-      }});""")
-        else:
-            layer_js_parts.append(f"""
-    // {name}
-    var {var} = L.layerGroup();
-    fetch('data/{file}')
-      .then(r => r.json())
-      .then(data => {{
-        L.geoJSON(data, {{
-          style: {{color: '{color}', weight: 5, opacity: 0.8}},
-          onEachFeature: function(f, layer) {{
-            if (f.properties && f.properties.popup_html) layer.bindPopup(f.properties.popup_html, {{maxWidth: 400}});
-          }}
-        }}).addTo({var});
+        }};
+        renderLayer('{var}');
       }});""")
 
-        if default_on:
-            overlay_js_parts.append(f'    "{name}": {var},')
-        else:
-            overlay_js_parts.append(f'    "{name}": {var},')
+        overlay_js_parts.append(f'    "{name}": layerGroups["{var}"],')
 
-    layers_init = "\n".join(layer_js_parts)
-    # Default-on layers get added to the map immediately
+    layers_init = "\n".join(layer_fetch_parts)
     default_adds = "\n".join(
-        f"    {layer['var']}.addTo(map);"
+        f"    layerGroups['{layer['var']}'].addTo(map);"
         for layer in layers
         if layer["default_on"]
     )
@@ -187,7 +244,7 @@ def _build_html_shell(
   <script src="https://unpkg.com/leaflet.locatecontrol@0.82.0/dist/L.Control.Locate.min.js"></script>
   <script src="https://unpkg.com/leaflet-control-geocoder@2.4.0/dist/Control.Geocoder.js"></script>
   <script>
-    var map = L.map('map').setView({center}, {zoom});
+    var map = L.map('map', {{preferCanvas: true}}).setView({center}, {zoom});
     L.tileLayer('{TILES_URL}', {{
       attribution: '{TILES_ATTR}',
       maxZoom: 19,
@@ -216,6 +273,66 @@ def _build_html_shell(
       L.marker(e.geocode.center).addTo(map)
         .bindPopup(e.geocode.name).openPopup();
     }}).addTo(map);
+
+    // --- Viewport-filtered rendering ---
+    var layerData = {{}};    // raw GeoJSON per layer key
+    var layerOpts = {{}};    // L.geoJSON options per layer key
+    var layerGroups = {{}};  // L.layerGroup shown on map
+
+    function featureBBox(f) {{
+      // Quick bbox from coordinates (works for points, lines, polygons)
+      var coords = f.geometry.coordinates;
+      if (f.geometry.type === 'Point') return [coords[1], coords[0], coords[1], coords[0]];
+      var flat = coords;
+      // Flatten one level for LineString; two for Polygon/MultiLineString
+      if (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiLineString')
+        flat = [].concat.apply([], coords);
+      if (f.geometry.type === 'MultiPolygon')
+        flat = [].concat.apply([], [].concat.apply([], coords));
+      var minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
+      for (var i = 0; i < flat.length; i++) {{
+        var c = flat[i];
+        if (c[0] < minLng) minLng = c[0];
+        if (c[0] > maxLng) maxLng = c[0];
+        if (c[1] < minLat) minLat = c[1];
+        if (c[1] > maxLat) maxLat = c[1];
+      }}
+      return [minLat, minLng, maxLat, maxLng];
+    }}
+
+    function renderLayer(key) {{
+      var group = layerGroups[key];
+      if (!group || !layerData[key]) return;
+      // Only render if this layer is on the map
+      if (!map.hasLayer(group)) return;
+      group.clearLayers();
+      var b = map.getBounds();
+      var visible = {{type: 'FeatureCollection', features: []}};
+      var features = layerData[key].features;
+      for (var i = 0; i < features.length; i++) {{
+        var bb = featureBBox(features[i]);
+        // Check if feature bbox intersects map bounds
+        if (bb[2] >= b.getSouth() && bb[0] <= b.getNorth()
+            && bb[3] >= b.getWest() && bb[1] <= b.getEast()) {{
+          visible.features.push(features[i]);
+        }}
+      }}
+      if (visible.features.length > 0) {{
+        L.geoJSON(visible, layerOpts[key]).addTo(group);
+      }}
+    }}
+
+    function renderAll() {{
+      for (var key in layerData) {{ renderLayer(key); }}
+    }}
+
+    map.on('moveend', renderAll);
+    map.on('overlayadd', function(e) {{
+      // Find the key for the layer that was just toggled on
+      for (var key in layerGroups) {{
+        if (layerGroups[key] === e.layer) {{ renderLayer(key); break; }}
+      }}
+    }});
 
 {layers_init}
 
@@ -268,6 +385,7 @@ def build_map(
     intervals_gdf: gpd.GeoDataFrame,
     signs_df: pd.DataFrame,
     unsnapped_signs: pd.DataFrame | None = None,
+    roads_gdf: gpd.GeoDataFrame | None = None,
     *,
     borough: str | None = None,
 ) -> None:
@@ -307,9 +425,12 @@ def build_map(
                 "default_on": default_on,
             })
 
-    # Export poles GeoJSON (off by default)
+    # Export poles GeoJSON (off by default), excluding DEUX COTES copies
+    original_signs = signs_df
+    if "is_deux_cotes_copy" in signs_df.columns:
+        original_signs = signs_df[~signs_df["is_deux_cotes_copy"]]
     poles_dest = data_dir / "poles.geojson"
-    if _build_pole_geojson(signs_df, poles_dest, label_prefix="Pole"):
+    if _build_pole_geojson(original_signs, poles_dest, label_prefix="Pole"):
         layers.append({
             "var": "layer_poles",
             "file": "poles.geojson",
@@ -318,6 +439,23 @@ def build_map(
             "default_on": False,
             "is_point": True,
         })
+
+    # Export DEUX COTES copies (off by default, for debugging)
+    # Offset copies to the opposite side of the road for visual clarity
+    if "is_deux_cotes_copy" in signs_df.columns and roads_gdf is not None:
+        copies = signs_df[signs_df["is_deux_cotes_copy"]]
+        if not copies.empty:
+            copies_offset = _offset_deux_cotes_copies(copies, roads_gdf)
+            copies_dest = data_dir / "deux_cotes_copies.geojson"
+            if _build_pole_geojson(copies_offset, copies_dest, label_prefix="DC Copy", group_by_side=True):
+                layers.append({
+                    "var": "layer_dc_copies",
+                    "file": "deux_cotes_copies.geojson",
+                    "name": "DEUX COTES Copies",
+                    "color": "#e056fd",
+                    "default_on": False,
+                    "is_point": True,
+                })
 
     # Export unsnapped poles (off by default)
     if unsnapped_signs is not None and not unsnapped_signs.empty:
