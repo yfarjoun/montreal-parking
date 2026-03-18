@@ -66,7 +66,21 @@ def classify_sign(description: str) -> str:
 
 def is_restrictive(category: str) -> bool:
     """Whether a sign category prevents free parking."""
-    return category in ("no_parking", "permit", "paid")
+    return category in ("no_parking", "permit")
+
+
+def sign_level(category: str) -> int | None:
+    """Priority level for interval classification. Higher overrides lower.
+
+    Level 3: parking disallowed (no_parking, permit)
+    Level 4: parking allowed with conditions (time_limited, unrestricted, paid)
+    None: not used in interval classification (street_cleaning, panonceau, other)
+    """
+    if category in ("no_parking", "permit"):
+        return 3
+    if category in ("time_limited", "unrestricted", "paid"):
+        return 4
+    return None
 
 
 def classify_all_signs(df: pd.DataFrame) -> pd.DataFrame:

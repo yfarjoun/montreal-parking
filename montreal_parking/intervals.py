@@ -8,6 +8,7 @@ import geopandas as gpd
 import pandas as pd
 from shapely.ops import substring
 
+from montreal_parking.classify import sign_level
 from montreal_parking.constants import CRS_MTM8, MIN_FREE_EDGE_M
 
 
@@ -23,16 +24,150 @@ def _get_signs_for_direction(
     return [s for s in pole_signs.get(pole_id, []) if s["arrow"] in (arrow, 0)]
 
 
-def _classify_interval(active_signs: list[dict[str, Any]]) -> tuple[str, list[Any]]:
-    """Classify an interval given its active signs."""
+def _classify_level_interval(
+    active_signs: list[dict[str, Any]],
+    level: int,
+) -> str | None:
+    """Classify an interval given its active signs at a specific level.
+
+    Level 3: if any sign is restrictive -> "restricted", else None
+    Level 4: "paid" > "time_limited" > "free" (unrestricted)
+    Returns None if no signs contribute a classification.
+    """
     if not active_signs:
-        return "free", []
-    has_restrictive = any(s["is_restrictive"] for s in active_signs)
-    if has_restrictive:
-        return "restricted", [s["description"] for s in active_signs]
-    if any(s["category"] == "time_limited" for s in active_signs):
-        return "time_limited", [s["description"] for s in active_signs]
-    return "free", [s["description"] for s in active_signs]
+        return None
+    if level == 3:
+        if any(s["category"] in ("no_parking", "permit") for s in active_signs):
+            return "restricted"
+        return None
+    if level == 4:
+        categories = {s["category"] for s in active_signs}
+        if "paid" in categories:
+            return "paid"
+        if "time_limited" in categories:
+            return "time_limited"
+        if "unrestricted" in categories:
+            return "free"
+    return None
+
+
+def _walk_level_spans(
+    pole_data: pd.DataFrame,
+    pole_signs: dict[Any, list[dict[str, Any]]],
+    forward_arrow: int,
+    backward_arrow: int,
+    road_length: float,
+    level: int,
+) -> list[tuple[float, float, str]]:
+    """Walk poles at a given level and produce classified spans.
+
+    Returns list of (start, end, category) spans. Only poles that have at least
+    one sign at this level are included in pole_data.
+    """
+    if pole_data.empty:
+        return []
+
+    spans: list[tuple[float, float, str]] = []
+
+    def _get(pole_id: Any, direction: str) -> list[dict[str, Any]]:
+        return _get_signs_for_direction(
+            pole_id, direction, pole_signs, forward_arrow, backward_arrow,
+        )
+
+    # Edge interval before first pole
+    first_pole = pole_data.iloc[0]
+    first_id = first_pole["POTEAU_ID_POT"]
+    first_dist = float(first_pole["projection_distance"])
+    if first_dist > 1.0:
+        cat = _classify_level_interval(_get(first_id, "backward"), level)
+        if cat is not None:
+            spans.append((0, first_dist, cat))
+
+    # Intervals between consecutive poles
+    for i in range(len(pole_data) - 1):
+        p1 = pole_data.iloc[i]
+        p2 = pole_data.iloc[i + 1]
+        active = _get(p1["POTEAU_ID_POT"], "forward") + _get(p2["POTEAU_ID_POT"], "backward")
+        cat = _classify_level_interval(active, level)
+        if cat is not None:
+            spans.append((
+                float(p1["projection_distance"]),
+                float(p2["projection_distance"]),
+                cat,
+            ))
+
+    # Edge interval after last pole
+    last_pole = pole_data.iloc[-1]
+    last_id = last_pole["POTEAU_ID_POT"]
+    last_dist = float(last_pole["projection_distance"])
+    if road_length - last_dist > 1.0:
+        cat = _classify_level_interval(_get(last_id, "forward"), level)
+        if cat is not None:
+            spans.append((last_dist, road_length, cat))
+
+    return spans
+
+
+def _merge_level_spans(
+    level3_spans: list[tuple[float, float, str]],
+    level4_spans: list[tuple[float, float, str]],
+    road_length: float,
+) -> list[tuple[float, float, str, list[str]]]:
+    """Merge level 3 and level 4 spans. Level 4 overrides level 3; level 3 overrides default (free).
+
+    Returns list of (start, end, category, descriptions) tuples covering [0, road_length].
+    """
+    # Collect all boundary points
+    boundaries: set[float] = {0.0, road_length}
+    for spans in (level3_spans, level4_spans):
+        for start, end, _ in spans:
+            boundaries.add(start)
+            boundaries.add(end)
+    sorted_bounds = sorted(boundaries)
+
+    result: list[tuple[float, float, str, list[str]]] = []
+    for i in range(len(sorted_bounds) - 1):
+        seg_start = sorted_bounds[i]
+        seg_end = sorted_bounds[i + 1]
+        if seg_end - seg_start < 0.5:
+            continue
+
+        mid = (seg_start + seg_end) / 2
+
+        # Find level 4 classification at midpoint
+        l4_cat: str | None = None
+        for start, end, cat in level4_spans:
+            if start <= mid < end:
+                l4_cat = cat
+                break
+
+        # Find level 3 classification at midpoint
+        l3_cat: str | None = None
+        for start, end, cat in level3_spans:
+            if start <= mid < end:
+                l3_cat = cat
+                break
+
+        # Level 4 overrides level 3, level 3 overrides default ("free")
+        if l4_cat is not None:
+            final_cat = l4_cat
+        elif l3_cat is not None:
+            final_cat = l3_cat
+        else:
+            final_cat = "free"
+
+        result.append((seg_start, seg_end, final_cat, []))
+
+    # Merge adjacent spans with the same category
+    merged: list[tuple[float, float, str, list[str]]] = []
+    for span in result:
+        if merged and merged[-1][2] == span[2]:
+            prev = merged[-1]
+            merged[-1] = (prev[0], span[1], prev[2], prev[3])
+        else:
+            merged.append(span)
+
+    return merged
 
 
 def _make_interval(
@@ -81,49 +216,51 @@ def _build_side_intervals(
     side: str,
     street_name: str,
 ) -> list[dict[str, Any]]:
-    """Build intervals for one (road, side) group from its poles."""
+    """Build intervals for one (road, side) group from its poles using level-based classification."""
+    road_length = road_geom.length
+
+    # Split pole_signs by level
+    level_pole_signs: dict[int, dict[Any, list[dict[str, Any]]]] = {3: {}, 4: {}}
+    for pid, signs in pole_signs.items():
+        for sign in signs:
+            lvl = sign_level(sign["category"])
+            if lvl in level_pole_signs:
+                if pid not in level_pole_signs[lvl]:
+                    level_pole_signs[lvl][pid] = []
+                level_pole_signs[lvl][pid].append(sign)
+
+    # Build pole DataFrames for each level (poles that have at least one sign at that level)
+    level_pole_data: dict[int, pd.DataFrame] = {}
+    for lvl in (3, 4):
+        level_pids = set(level_pole_signs[lvl].keys())
+        if level_pids:
+            mask = pole_data["POTEAU_ID_POT"].isin(level_pids)
+            level_pole_data[lvl] = pole_data[mask].reset_index(drop=True)
+        else:
+            level_pole_data[lvl] = pole_data.iloc[0:0]  # empty with same columns
+
+    # Walk each level independently
+    level3_spans = _walk_level_spans(
+        level_pole_data[3], level_pole_signs[3],
+        forward_arrow, backward_arrow, road_length, level=3,
+    )
+    level4_spans = _walk_level_spans(
+        level_pole_data[4], level_pole_signs[4],
+        forward_arrow, backward_arrow, road_length, level=4,
+    )
+
+    # Merge levels
+    merged = _merge_level_spans(level3_spans, level4_spans, road_length)
+
+    # Apply 5m edge rule and build geometry
     intervals: list[dict[str, Any]] = []
-
-    def _get(pole_id: Any, direction: str) -> list[dict[str, Any]]:
-        return _get_signs_for_direction(pole_id, direction, pole_signs, forward_arrow, backward_arrow)
-
-    # Edge interval before first pole
-    first_pole = pole_data.iloc[0]
-    first_id = first_pole["POTEAU_ID_POT"]
-    first_dist = first_pole["projection_distance"]
-    if first_dist > 1.0:
-        cat, descs = _classify_interval(_get(first_id, "backward"))
+    for start, end, cat, descs in merged:
         # Short edges near intersections can't be free parking
-        if cat == "free" and first_dist < MIN_FREE_EDGE_M:
+        if cat == "free" and start == 0.0 and end < MIN_FREE_EDGE_M:
             cat = "no_data"
-        iv = _make_interval(0, first_dist, cat, descs, road_geom, id_trc, side, street_name)
-        if iv:
-            intervals.append(iv)
-
-    # Intervals between consecutive poles
-    for i in range(len(pole_data) - 1):
-        p1 = pole_data.iloc[i]
-        p2 = pole_data.iloc[i + 1]
-        active = _get(p1["POTEAU_ID_POT"], "forward") + _get(p2["POTEAU_ID_POT"], "backward")
-        cat, descs = _classify_interval(active)
-        iv = _make_interval(
-            p1["projection_distance"], p2["projection_distance"],
-            cat, descs, road_geom, id_trc, side, street_name,
-        )
-        if iv:
-            intervals.append(iv)
-
-    # Edge interval after last pole
-    last_pole = pole_data.iloc[-1]
-    last_id = last_pole["POTEAU_ID_POT"]
-    last_dist = last_pole["projection_distance"]
-    tail_length = road_geom.length - last_dist
-    if tail_length > 1.0:
-        cat, descs = _classify_interval(_get(last_id, "forward"))
-        # Short edges near intersections can't be free parking
-        if cat == "free" and tail_length < MIN_FREE_EDGE_M:
+        if cat == "free" and end == road_length and (road_length - start) < MIN_FREE_EDGE_M:
             cat = "no_data"
-        iv = _make_interval(last_dist, road_geom.length, cat, descs, road_geom, id_trc, side, street_name)
+        iv = _make_interval(start, end, cat, descs, road_geom, id_trc, side, street_name)
         if iv:
             intervals.append(iv)
 
@@ -163,8 +300,11 @@ def reconstruct_intervals(
         )
 
         # Build lookup: pole_id -> list of sign info dicts
+        # Exclude street_cleaning from classification (kept in snapped data for popups)
         pole_signs: dict[Any, list[dict[str, Any]]] = {}
         for _, sign_row in group.iterrows():
+            if sign_row["sign_category"] == "street_cleaning":
+                continue
             pid = sign_row["POTEAU_ID_POT"]
             if pid not in pole_signs:
                 pole_signs[pid] = []

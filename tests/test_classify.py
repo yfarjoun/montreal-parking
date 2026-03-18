@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from montreal_parking.classify import classify_sign, is_restrictive
+from montreal_parking.classify import classify_sign, is_restrictive, sign_level
 
 # ---------------------------------------------------------------------------
 # classify_sign
@@ -131,13 +131,34 @@ class TestClassifySign:
 class TestIsRestrictive:
     """is_restrictive should be True only for categories that block free parking."""
 
-    @pytest.mark.parametrize("category", ["no_parking", "permit", "paid"])
+    @pytest.mark.parametrize("category", ["no_parking", "permit"])
     def test_restrictive_categories(self, category: str) -> None:
         assert is_restrictive(category) is True
 
     @pytest.mark.parametrize(
         "category",
-        ["time_limited", "street_cleaning", "unrestricted", "panonceau", "other"],
+        ["paid", "time_limited", "street_cleaning", "unrestricted", "panonceau", "other"],
     )
     def test_non_restrictive_categories(self, category: str) -> None:
         assert is_restrictive(category) is False
+
+
+# ---------------------------------------------------------------------------
+# sign_level
+# ---------------------------------------------------------------------------
+
+
+class TestSignLevel:
+    """sign_level should return the correct priority level for each category."""
+
+    @pytest.mark.parametrize("category", ["no_parking", "permit"])
+    def test_level_3_categories(self, category: str) -> None:
+        assert sign_level(category) == 3
+
+    @pytest.mark.parametrize("category", ["time_limited", "unrestricted", "paid"])
+    def test_level_4_categories(self, category: str) -> None:
+        assert sign_level(category) == 4
+
+    @pytest.mark.parametrize("category", ["street_cleaning", "panonceau", "other"])
+    def test_none_categories(self, category: str) -> None:
+        assert sign_level(category) is None

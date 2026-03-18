@@ -164,7 +164,10 @@ class TestReconstructIntervals:
         intervals = reconstruct_intervals(signs, roads)
         # Should have intervals on the right side (from signs) + no_data on left
         right_intervals = intervals[intervals["side"] == "right"]
-        assert len(right_intervals) == 2  # before + after the pole
+        # Level-based merge combines adjacent spans with the same category,
+        # so a single bidirectional no_parking pole produces one "restricted" interval
+        assert len(right_intervals) >= 1
+        assert all(right_intervals["category"] == "restricted")
 
     def test_two_restrictive_poles_creates_restricted_interval(self) -> None:
         """Two no-parking poles pointing inward → restricted interval between them."""
@@ -413,3 +416,184 @@ class TestReconstructIntervals:
         edge = right[right["start_dist"] == 0]
         assert len(edge) == 1
         assert edge.iloc[0]["category"] == "free"
+
+
+class TestLevelBasedClassification:
+    """Tests for the level-based interval classification system."""
+
+    def test_level4_overrides_level3(self) -> None:
+        """A time_limited (level 4) sign should override no_parking (level 3) in the same zone."""
+        roads = _make_road(length=100)
+        # Level 3: no_parking covers the whole road (bidirectional)
+        # Level 4: time_limited covers the whole road (bidirectional)
+        # Result: time_limited should win
+        signs = _make_snapped_signs([
+            {
+                "POTEAU_ID_POT": 1,
+                "projection_distance": 50.0,
+                "side": "right",
+                "ID_TRC": 1,
+                "DESCRIPTION_RPA": "\\P",
+                "FLECHE_PAN": 0,
+                "sign_category": "no_parking",
+                "is_restrictive": True,
+                "NOM_VOIE": "Rue Test",
+            },
+            {
+                "POTEAU_ID_POT": 1,
+                "projection_distance": 50.0,
+                "side": "right",
+                "ID_TRC": 1,
+                "DESCRIPTION_RPA": "P 15 MIN",
+                "FLECHE_PAN": 0,
+                "sign_category": "time_limited",
+                "is_restrictive": False,
+                "NOM_VOIE": "Rue Test",
+            },
+        ])
+        intervals = reconstruct_intervals(signs, roads)
+        right = intervals[intervals["side"] == "right"]
+        assert all(right["category"] == "time_limited")
+
+    def test_level3_arrows_dont_interact_with_level4(self) -> None:
+        """Level 3 arrows should only interact with level 3 arrows.
+
+        Scenario: level 3 no_parking with forward arrow, level 4 time_limited with backward arrow.
+        These should NOT create a combined restricted zone — they're at different levels.
+        """
+        roads = _make_road(length=100)
+        signs = _make_snapped_signs([
+            {
+                "POTEAU_ID_POT": 1,
+                "projection_distance": 20.0,
+                "side": "right",
+                "ID_TRC": 1,
+                "DESCRIPTION_RPA": "\\P",
+                "FLECHE_PAN": 2,  # forward
+                "sign_category": "no_parking",
+                "is_restrictive": True,
+                "NOM_VOIE": "Rue Test",
+            },
+            {
+                "POTEAU_ID_POT": 2,
+                "projection_distance": 80.0,
+                "side": "right",
+                "ID_TRC": 1,
+                "DESCRIPTION_RPA": "P 15 MIN",
+                "FLECHE_PAN": 3,  # backward
+                "sign_category": "time_limited",
+                "is_restrictive": False,
+                "NOM_VOIE": "Rue Test",
+            },
+        ])
+        intervals = reconstruct_intervals(signs, roads)
+        right = intervals[intervals["side"] == "right"]
+        # Level 3 forward from pole 1 covers 20-100m as "restricted"
+        # Level 4 backward from pole 2 covers 0-80m as "time_limited"
+        # Level 4 overrides level 3 in overlap (20-80m) → time_limited
+        # Final: time_limited [0,80], restricted [80,100]
+        tl = right[right["category"] == "time_limited"]
+        assert len(tl) >= 1
+        # The time_limited span should cover the overlap zone (20-80m)
+        assert tl.iloc[0]["start_dist"] <= 20.0
+        assert tl.iloc[0]["end_dist"] >= 80.0
+        # No "restricted" in the 20-80m zone
+        restricted_in_middle = right[
+            (right["category"] == "restricted")
+            & (right["start_dist"] < 80)
+            & (right["end_dist"] > 20)
+        ]
+        assert restricted_in_middle.empty
+
+    def test_paid_category_produces_paid_intervals(self) -> None:
+        """A paid parking sign should produce 'paid' intervals."""
+        roads = _make_road(length=100)
+        signs = _make_snapped_signs([{
+            "POTEAU_ID_POT": 1,
+            "projection_distance": 50.0,
+            "side": "right",
+            "ID_TRC": 1,
+            "DESCRIPTION_RPA": "TARIF 2$/HR",
+            "FLECHE_PAN": 0,
+            "sign_category": "paid",
+            "is_restrictive": False,
+            "NOM_VOIE": "Rue Test",
+        }])
+        intervals = reconstruct_intervals(signs, roads)
+        right = intervals[intervals["side"] == "right"]
+        assert all(right["category"] == "paid")
+
+    def test_street_cleaning_ignored_in_classification(self) -> None:
+        """Street cleaning signs should not affect interval classification."""
+        roads = _make_road(length=100)
+        signs = _make_snapped_signs([{
+            "POTEAU_ID_POT": 1,
+            "projection_distance": 50.0,
+            "side": "right",
+            "ID_TRC": 1,
+            "DESCRIPTION_RPA": "\\P 08h-09h MAR. 1 AVRIL AU 1 DEC.",
+            "FLECHE_PAN": 0,
+            "sign_category": "street_cleaning",
+            "is_restrictive": False,
+            "NOM_VOIE": "Rue Test",
+        }])
+        intervals = reconstruct_intervals(signs, roads)
+        right = intervals[intervals["side"] == "right"]
+        # Street cleaning is excluded from classification, so the road should be free
+        assert all(right["category"] == "free")
+
+    def test_deux_cotes_level3_doesnt_break_level4_zone(self) -> None:
+        r"""DEUX COTES copy (level 3) should not break a time_limited (level 4) zone.
+
+        This is the core bug that level-based classification fixes:
+        a DEUX COTES \P sign copied to the opposite side should not override
+        a P 15 MIN sign that's already there at level 4.
+        """
+        roads = _make_road(length=100)
+        signs = _make_snapped_signs([
+            # Level 4: time_limited sign on the right side
+            {
+                "POTEAU_ID_POT": 1,
+                "projection_distance": 30.0,
+                "side": "right",
+                "ID_TRC": 1,
+                "DESCRIPTION_RPA": "P 15 MIN",
+                "FLECHE_PAN": 2,  # forward
+                "sign_category": "time_limited",
+                "is_restrictive": False,
+                "NOM_VOIE": "Rue Test",
+            },
+            {
+                "POTEAU_ID_POT": 2,
+                "projection_distance": 70.0,
+                "side": "right",
+                "ID_TRC": 1,
+                "DESCRIPTION_RPA": "P 15 MIN",
+                "FLECHE_PAN": 3,  # backward
+                "sign_category": "time_limited",
+                "is_restrictive": False,
+                "NOM_VOIE": "Rue Test",
+            },
+            # Level 3: DEUX COTES copy in the middle of the time_limited zone
+            {
+                "POTEAU_ID_POT": 3,
+                "projection_distance": 50.0,
+                "side": "right",
+                "ID_TRC": 1,
+                "DESCRIPTION_RPA": "\\P DEUX COTES",
+                "FLECHE_PAN": 0,
+                "sign_category": "no_parking",
+                "is_restrictive": True,
+                "NOM_VOIE": "Rue Test",
+            },
+        ])
+        intervals = reconstruct_intervals(signs, roads)
+        right = intervals[intervals["side"] == "right"]
+        # The zone between poles 1 and 2 (30-70m) should be time_limited,
+        # NOT broken by the DEUX COTES copy
+        middle = right[
+            (right["start_dist"] >= 29) & (right["end_dist"] <= 71)
+        ]
+        cats = middle["category"].unique()
+        assert "time_limited" in cats, f"Expected time_limited in zone, got {cats}"
+        assert "restricted" not in cats, "DEUX COTES copy broke time_limited zone"
