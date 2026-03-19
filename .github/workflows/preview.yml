@@ -1,0 +1,34 @@
+name: Build Preview
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build-preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: prefix-dev/setup-pixi@v0.9.4
+
+      - name: Cache data downloads
+        uses: actions/cache@v5
+        with:
+          path: data/
+          key: montreal-data-${{ github.run_id }}
+          restore-keys: montreal-data-
+
+      - name: Build map (all Montreal)
+        run: pixi run build
+        env:
+          PYTHONUNBUFFERED: "1"
+
+      - name: Upload preview artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: map-preview-${{ github.ref_name }}
+          path: output/
+          retention-days: 7
