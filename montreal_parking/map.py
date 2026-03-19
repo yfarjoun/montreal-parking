@@ -400,7 +400,8 @@ def _build_html_shell(
       div.innerHTML =
         '<b>Montreal Free Parking Finder</b><br>' +
         'Hobby project \u2014 not official. Data may be inaccurate.<br>' +
-        '<a href="https://github.com/yfarjoun/montreal-parking" target="_blank">GitHub</a>' +
+        '<a href="stats.html">Statistics</a>' +
+        ' · <a href="https://github.com/yfarjoun/montreal-parking" target="_blank">GitHub</a>' +
         ' · <a href="https://github.com/yfarjoun/montreal-parking/issues" target="_blank">Report a bug</a>';
       return div;
     }};
