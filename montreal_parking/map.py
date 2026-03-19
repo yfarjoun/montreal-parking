@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import shapely
 
+from montreal_parking import __version__
 from montreal_parking.constants import (
     COLOR_FREE,
     COLOR_NO_DATA,
@@ -402,7 +403,8 @@ def _build_html_shell(
         'Hobby project \u2014 not official. Data may be inaccurate.<br>' +
         '<a href="stats.html">Statistics</a>' +
         ' · <a href="https://github.com/yfarjoun/montreal-parking" target="_blank">GitHub</a>' +
-        ' · <a href="https://github.com/yfarjoun/montreal-parking/issues" target="_blank">Report a bug</a>';
+        ' · <a href="https://github.com/yfarjoun/montreal-parking/issues" target="_blank">Report a bug</a>' +
+        '<br><span style="color:#aaa;font-size:10px">v{__version__}</span>';
       return div;
     }};
     infoControl.addTo(map);

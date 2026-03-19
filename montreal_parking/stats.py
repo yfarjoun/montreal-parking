@@ -9,6 +9,7 @@ from typing import Any
 import geopandas as gpd
 import pandas as pd
 
+from montreal_parking import __version__
 from montreal_parking.constants import (
     COLOR_FREE,
     COLOR_NO_DATA,
@@ -210,6 +211,7 @@ def generate_stats_html(
     Hobby project &mdash; not official. Data from
     <a href="https://donnees.montreal.ca/">Montreal Open Data</a>.
     <a href="https://github.com/yfarjoun/montreal-parking">GitHub</a>
+    &middot; v{__version__}
   </p>
   <script data-goatcounter="https://yfarjoun.goatcounter.com/count"
           async src="//gc.zgo.at/count.js"></script>
