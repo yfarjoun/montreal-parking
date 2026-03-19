@@ -15,6 +15,7 @@ import shapely
 from montreal_parking.constants import (
     COLOR_FREE,
     COLOR_NO_DATA,
+    COLOR_PAID,
     COLOR_RESTRICTED,
     COLOR_TIME_LIMITED,
     CRS_WGS84,
@@ -31,6 +32,7 @@ from montreal_parking.constants import (
 _LAYER_CONFIG: list[tuple[str, str, str, bool]] = [
     ("Free Parking", "free", COLOR_FREE, True),
     ("Time-Limited", "time_limited", COLOR_TIME_LIMITED, True),
+    ("Paid Parking", "paid", COLOR_PAID, True),
     ("Restricted", "restricted", COLOR_RESTRICTED, False),
     ("No Data", "no_data", COLOR_NO_DATA, False),
 ]

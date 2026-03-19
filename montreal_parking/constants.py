@@ -46,6 +46,7 @@ FILENAMES = {
 COLOR_FREE = "#2ecc71"  # green
 COLOR_TIME_LIMITED = "#f1c40f"  # yellow
 COLOR_RESTRICTED = "#e74c3c"  # red
+COLOR_PAID = "#3498db"  # blue
 COLOR_NO_DATA = "#9b59b6"  # purple
 
 # Default map centre (Montreal city centre)
