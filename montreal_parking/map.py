@@ -226,6 +226,13 @@ def _build_html_shell(
     )
     overlays_obj = "\n".join(overlay_js_parts)
 
+    # Build JS object mapping layer display name → {color, isPoint}
+    legend_entries = ", ".join(
+        f'"{layer["name"]}": {{color:"{layer["color"]}", isPoint:{str(layer.get("is_point", False)).lower()}}}'
+        for layer in layers
+    )
+    legend_map_js = f"var legendInfo = {{{legend_entries}}};"
+
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -238,6 +245,21 @@ def _build_html_shell(
   <style>
     html, body {{ margin: 0; padding: 0; height: 100%; }}
     #map {{ width: 100%; height: 100%; }}
+    .legend-swatch {{
+      display: inline-block;
+      margin-right: 6px;
+      vertical-align: middle;
+    }}
+    .legend-swatch-line {{
+      width: 18px;
+      height: 4px;
+      border-radius: 2px;
+    }}
+    .legend-swatch-dot {{
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }}
   </style>
 </head>
 <body>
@@ -340,9 +362,23 @@ def _build_html_shell(
 
 {default_adds}
 
+    {legend_map_js}
     L.control.layers(null, {{
 {overlays_obj}
     }}, {{collapsed: false}}).addTo(map);
+
+    // Inject colored swatches into layer control labels
+    document.querySelectorAll('.leaflet-control-layers-overlays label').forEach(function(label) {{
+      var span = label.querySelector('span');
+      if (!span) return;
+      var name = span.textContent.trim();
+      var info = legendInfo[name];
+      if (!info) return;
+      var swatch = document.createElement('span');
+      swatch.className = 'legend-swatch ' + (info.isPoint ? 'legend-swatch-dot' : 'legend-swatch-line');
+      swatch.style.backgroundColor = info.color;
+      span.parentNode.insertBefore(swatch, span);
+    }});
 
     // --- Droppable pin + shareable URL ---
     var droppedPin = null;
@@ -390,6 +426,7 @@ def build_map(
     roads_gdf: gpd.GeoDataFrame | None = None,
     *,
     borough: str | None = None,
+    debug: bool = False,
 ) -> None:
     """Export GeoJSON data files and a lightweight HTML map shell.
 
@@ -442,9 +479,8 @@ def build_map(
             "is_point": True,
         })
 
-    # Export DEUX COTES copies (off by default, for debugging)
-    # Offset copies to the opposite side of the road for visual clarity
-    if "is_deux_cotes_copy" in signs_df.columns and roads_gdf is not None:
+    # Export DEUX COTES copies (debug only)
+    if debug and "is_deux_cotes_copy" in signs_df.columns and roads_gdf is not None:
         copies = signs_df[signs_df["is_deux_cotes_copy"]]
         if not copies.empty:
             copies_offset = _offset_deux_cotes_copies(copies, roads_gdf)

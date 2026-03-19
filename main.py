@@ -22,6 +22,12 @@ def _parse_args() -> argparse.Namespace:
         help="Filter to a specific borough (substring match on NOM_ARROND). "
         "Default: all Montreal.",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="Include debug layers (e.g. DEUX COTES copies) in the map.",
+    )
     return parser.parse_args()
 
 
@@ -63,7 +69,7 @@ def main() -> None:
 
     print("\nStep 6: Building map...")
     OUTPUT_DIR.mkdir(exist_ok=True)
-    build_map(intervals, snapped, unsnapped, roads_gdf=roads_gdf, borough=args.borough)
+    build_map(intervals, snapped, unsnapped, roads_gdf=roads_gdf, borough=args.borough, debug=args.debug)
     print(f"  Map saved to {OUTPUT_DIR}/")
 
 
