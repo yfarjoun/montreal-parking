@@ -177,6 +177,8 @@ def _build_html_shell(
     layers: list[dict[str, Any]],
     center: list[float],
     zoom: int,
+    *,
+    data_date: str = "",
 ) -> str:
     """Generate a lightweight HTML page that loads GeoJSON via fetch()."""
     # Build per-layer JS: fetch GeoJSON, store raw data, render on viewport change
@@ -404,7 +406,8 @@ def _build_html_shell(
         '<a href="stats.html">Statistics</a>' +
         ' · <a href="https://github.com/yfarjoun/montreal-parking" target="_blank">GitHub</a>' +
         ' · <a href="https://github.com/yfarjoun/montreal-parking/issues" target="_blank">Report a bug</a>' +
-        '<br><span style="color:#aaa;font-size:10px">v{__version__}</span>';
+        '<br><span style="color:#aaa;font-size:10px">' +
+        'v{__version__}{" \u00b7 data: " + data_date if data_date else ""}</span>';
       return div;
     }};
     infoControl.addTo(map);
@@ -458,6 +461,7 @@ def build_map(
     *,
     borough: str | None = None,
     debug: bool = False,
+    data_date: str = "",
 ) -> None:
     """Export GeoJSON data files and a lightweight HTML map shell.
 
@@ -540,7 +544,7 @@ def build_map(
             })
 
     # Write HTML shell
-    html_content = _build_html_shell(layers, center, zoom)
+    html_content = _build_html_shell(layers, center, zoom, data_date=data_date)
     index_path = OUTPUT_DIR / "index.html"
     with open(index_path, "w") as f:
         f.write(html_content)
