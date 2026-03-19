@@ -14,6 +14,17 @@ from montreal_parking.constants import CRS_MTM8, IntervalCategory, SignCategory
 from montreal_parking.intervals import reconstruct_intervals
 from montreal_parking.snap import snap_poles_to_roads
 
+# SignCategory members (PAID and TIME_LIMITED omitted — conflict with IntervalCategory)
+NO_PARKING = SignCategory.NO_PARKING
+PERMIT = SignCategory.PERMIT
+UNRESTRICTED = SignCategory.UNRESTRICTED
+STREET_CLEANING = SignCategory.STREET_CLEANING
+
+# IntervalCategory members (PAID and TIME_LIMITED omitted — conflict with SignCategory)
+FREE = IntervalCategory.FREE
+RESTRICTED = IntervalCategory.RESTRICTED
+NO_DATA = IntervalCategory.NO_DATA
+
 
 def _make_road(
     x_start: float = 300000,
@@ -59,7 +70,7 @@ class TestSnapPolesToRoads:
             "Longitude": -73.5700,
             "DESCRIPTION_RPA": "\\P",
             "FLECHE_PAN": 0,
-            "sign_category": SignCategory.NO_PARKING,
+            "sign_category": NO_PARKING,
             "is_restrictive": True,
             "NOM_ARROND": "Le Plateau-Mont-Royal",
         }])
@@ -86,7 +97,7 @@ class TestSnapPolesToRoads:
             "Longitude": road_centroid.x,
             "DESCRIPTION_RPA": "\\P",
             "FLECHE_PAN": 0,
-            "sign_category": SignCategory.NO_PARKING,
+            "sign_category": NO_PARKING,
             "is_restrictive": True,
             "NOM_ARROND": "Le Plateau-Mont-Royal",
         }])
@@ -106,7 +117,7 @@ class TestSnapPolesToRoads:
             "Longitude": midpoint.x,
             "DESCRIPTION_RPA": "P",
             "FLECHE_PAN": 0,
-            "sign_category": SignCategory.UNRESTRICTED,
+            "sign_category": UNRESTRICTED,
             "is_restrictive": False,
             "NOM_ARROND": "Test",
         }
@@ -116,7 +127,7 @@ class TestSnapPolesToRoads:
             "Longitude": midpoint.x + 0.0001,  # slight offset so they don't overlap
             "DESCRIPTION_RPA": "P",
             "FLECHE_PAN": 0,
-            "sign_category": SignCategory.UNRESTRICTED,
+            "sign_category": UNRESTRICTED,
             "is_restrictive": False,
             "NOM_ARROND": "Test",
         }
@@ -157,7 +168,7 @@ class TestReconstructIntervals:
             "ID_TRC": 1,
             "DESCRIPTION_RPA": "\\P",
             "FLECHE_PAN": 0,  # both directions
-            "sign_category": SignCategory.NO_PARKING,
+            "sign_category": NO_PARKING,
             "is_restrictive": True,
             "NOM_VOIE": "Rue Test",
         }])
@@ -167,7 +178,7 @@ class TestReconstructIntervals:
         # Level-based merge combines adjacent spans with the same category,
         # so a single bidirectional no_parking pole produces one "restricted" interval
         assert len(right_intervals) >= 1
-        assert all(right_intervals["category"] == IntervalCategory.RESTRICTED)
+        assert all(right_intervals["category"] == RESTRICTED)
 
     def test_two_restrictive_poles_creates_restricted_interval(self) -> None:
         """Two no-parking poles pointing inward → restricted interval between them."""
@@ -180,7 +191,7 @@ class TestReconstructIntervals:
                 "ID_TRC": 1,
                 "DESCRIPTION_RPA": "\\P",
                 "FLECHE_PAN": 2,  # arrow 2 on right side = forward
-                "sign_category": SignCategory.NO_PARKING,
+                "sign_category": NO_PARKING,
                 "is_restrictive": True,
                 "NOM_VOIE": "Rue Test",
             },
@@ -191,7 +202,7 @@ class TestReconstructIntervals:
                 "ID_TRC": 1,
                 "DESCRIPTION_RPA": "\\P",
                 "FLECHE_PAN": 3,  # arrow 3 on right side = backward
-                "sign_category": SignCategory.NO_PARKING,
+                "sign_category": NO_PARKING,
                 "is_restrictive": True,
                 "NOM_VOIE": "Rue Test",
             },
@@ -202,7 +213,7 @@ class TestReconstructIntervals:
             (right["start_dist"] >= 19) & (right["end_dist"] <= 81)
         ]
         assert len(middle) == 1
-        assert middle.iloc[0]["category"] == IntervalCategory.RESTRICTED
+        assert middle.iloc[0]["category"] == RESTRICTED
 
     def test_free_interval_between_outward_arrows(self) -> None:
         """Two poles with arrows pointing away from the gap → free between them.
@@ -218,7 +229,7 @@ class TestReconstructIntervals:
                 "ID_TRC": 1,
                 "DESCRIPTION_RPA": "\\P",
                 "FLECHE_PAN": 3,  # arrow 3 on right side = backward (away from gap)
-                "sign_category": SignCategory.NO_PARKING,
+                "sign_category": NO_PARKING,
                 "is_restrictive": True,
                 "NOM_VOIE": "Rue Test",
             },
@@ -229,7 +240,7 @@ class TestReconstructIntervals:
                 "ID_TRC": 1,
                 "DESCRIPTION_RPA": "\\P",
                 "FLECHE_PAN": 2,  # arrow 2 on right side = forward (away from gap)
-                "sign_category": SignCategory.NO_PARKING,
+                "sign_category": NO_PARKING,
                 "is_restrictive": True,
                 "NOM_VOIE": "Rue Test",
             },
@@ -240,7 +251,7 @@ class TestReconstructIntervals:
             (right["start_dist"] >= 29) & (right["end_dist"] <= 71)
         ]
         assert len(middle) == 1
-        assert middle.iloc[0]["category"] == IntervalCategory.FREE
+        assert middle.iloc[0]["category"] == FREE
 
     def test_arrow_direction_flips_on_left_side(self) -> None:
         """On the left side, arrow 2=backward and arrow 3=forward (opposite of right)."""
@@ -256,7 +267,7 @@ class TestReconstructIntervals:
                 "ID_TRC": 1,
                 "DESCRIPTION_RPA": "\\P",
                 "FLECHE_PAN": 3,  # left side: 3=forward
-                "sign_category": SignCategory.NO_PARKING,
+                "sign_category": NO_PARKING,
                 "is_restrictive": True,
                 "NOM_VOIE": "Rue Test",
             },
@@ -267,7 +278,7 @@ class TestReconstructIntervals:
                 "ID_TRC": 1,
                 "DESCRIPTION_RPA": "\\P",
                 "FLECHE_PAN": 2,  # left side: 2=backward
-                "sign_category": SignCategory.NO_PARKING,
+                "sign_category": NO_PARKING,
                 "is_restrictive": True,
                 "NOM_VOIE": "Rue Test",
             },
@@ -278,7 +289,7 @@ class TestReconstructIntervals:
             (left["start_dist"] >= 19) & (left["end_dist"] <= 81)
         ]
         assert len(middle) == 1
-        assert middle.iloc[0]["category"] == IntervalCategory.RESTRICTED
+        assert middle.iloc[0]["category"] == RESTRICTED
 
     def test_unsigned_side_gets_no_data(self) -> None:
         """When poles exist only on one side, the other side should be 'no_data'."""
@@ -290,14 +301,14 @@ class TestReconstructIntervals:
             "ID_TRC": 1,
             "DESCRIPTION_RPA": "P",
             "FLECHE_PAN": 0,
-            "sign_category": SignCategory.UNRESTRICTED,
+            "sign_category": UNRESTRICTED,
             "is_restrictive": False,
             "NOM_VOIE": "Rue Test",
         }])
         intervals = reconstruct_intervals(signs, roads)
         left = intervals[intervals["side"] == "left"]
         assert len(left) == 1
-        assert left.iloc[0]["category"] == IntervalCategory.NO_DATA
+        assert left.iloc[0]["category"] == NO_DATA
 
     def test_deux_cotes_applies_to_both_sides(self) -> None:
         """A DEUX COTES sign should create intervals on both sides of the road.
@@ -313,7 +324,7 @@ class TestReconstructIntervals:
             "ID_TRC": 1,
             "DESCRIPTION_RPA": "\\P DEUX COTES",
             "FLECHE_PAN": 0,
-            "sign_category": SignCategory.NO_PARKING,
+            "sign_category": NO_PARKING,
             "is_restrictive": True,
             "NOM_VOIE": "Rue Le Jeune",
         }
@@ -327,7 +338,7 @@ class TestReconstructIntervals:
             side_intervals = intervals[intervals["side"] == side]
             assert not side_intervals.empty, f"No intervals on {side} side"
             cats = side_intervals["category"].unique()
-            assert IntervalCategory.RESTRICTED in cats or IntervalCategory.NO_DATA not in cats
+            assert RESTRICTED in cats or NO_DATA not in cats
 
     def test_bidirectional_arrow_applies_both_ways(self) -> None:
         """Arrow code 0 means the sign applies in both directions."""
@@ -339,14 +350,14 @@ class TestReconstructIntervals:
             "ID_TRC": 1,
             "DESCRIPTION_RPA": "\\P",
             "FLECHE_PAN": 0,
-            "sign_category": SignCategory.NO_PARKING,
+            "sign_category": NO_PARKING,
             "is_restrictive": True,
             "NOM_VOIE": "Rue Test",
         }])
         intervals = reconstruct_intervals(signs, roads)
         right = intervals[intervals["side"] == "right"]
         # Both before and after the pole should be restricted (arrow 0 = both)
-        assert all(right["category"] == IntervalCategory.RESTRICTED)
+        assert all(right["category"] == RESTRICTED)
 
     def test_short_free_edge_becomes_no_data(self) -> None:
         """A short (<5m) edge interval that would be 'free' should become 'no_data'.
@@ -363,7 +374,7 @@ class TestReconstructIntervals:
             "ID_TRC": 1,
             "DESCRIPTION_RPA": "\\P",
             "FLECHE_PAN": 2,  # right side: 2=forward (points away from 0m edge)
-            "sign_category": SignCategory.NO_PARKING,
+            "sign_category": NO_PARKING,
             "is_restrictive": True,
             "NOM_VOIE": "Rue Test",
         }])
@@ -371,7 +382,7 @@ class TestReconstructIntervals:
         right = intervals[intervals["side"] == "right"]
         edge = right[right["start_dist"] == 0]
         assert len(edge) == 1
-        assert edge.iloc[0]["category"] == IntervalCategory.NO_DATA
+        assert edge.iloc[0]["category"] == NO_DATA
 
     def test_short_free_tail_becomes_no_data(self) -> None:
         """A short (<5m) tail edge that would be 'free' should become 'no_data'."""
@@ -385,7 +396,7 @@ class TestReconstructIntervals:
             "ID_TRC": 1,
             "DESCRIPTION_RPA": "\\P",
             "FLECHE_PAN": 3,  # right side: 3=backward (points away from 100m edge)
-            "sign_category": SignCategory.NO_PARKING,
+            "sign_category": NO_PARKING,
             "is_restrictive": True,
             "NOM_VOIE": "Rue Test",
         }])
@@ -393,7 +404,7 @@ class TestReconstructIntervals:
         right = intervals[intervals["side"] == "right"]
         tail = right[right["end_dist"] >= 99]
         assert len(tail) == 1
-        assert tail.iloc[0]["category"] == IntervalCategory.NO_DATA
+        assert tail.iloc[0]["category"] == NO_DATA
 
     def test_long_free_edge_stays_free(self) -> None:
         """A longer (>=5m) edge interval that's 'free' should remain free."""
@@ -407,7 +418,7 @@ class TestReconstructIntervals:
             "ID_TRC": 1,
             "DESCRIPTION_RPA": "\\P",
             "FLECHE_PAN": 2,  # right side: 2=forward (points away from 0m edge)
-            "sign_category": SignCategory.NO_PARKING,
+            "sign_category": NO_PARKING,
             "is_restrictive": True,
             "NOM_VOIE": "Rue Test",
         }])
@@ -415,7 +426,7 @@ class TestReconstructIntervals:
         right = intervals[intervals["side"] == "right"]
         edge = right[right["start_dist"] == 0]
         assert len(edge) == 1
-        assert edge.iloc[0]["category"] == IntervalCategory.FREE
+        assert edge.iloc[0]["category"] == FREE
 
 
 class TestLevelBasedClassification:
@@ -435,7 +446,7 @@ class TestLevelBasedClassification:
                 "ID_TRC": 1,
                 "DESCRIPTION_RPA": "\\P",
                 "FLECHE_PAN": 0,
-                "sign_category": SignCategory.NO_PARKING,
+                "sign_category": NO_PARKING,
                 "is_restrictive": True,
                 "NOM_VOIE": "Rue Test",
             },
@@ -470,7 +481,7 @@ class TestLevelBasedClassification:
                 "ID_TRC": 1,
                 "DESCRIPTION_RPA": "\\P",
                 "FLECHE_PAN": 2,  # forward
-                "sign_category": SignCategory.NO_PARKING,
+                "sign_category": NO_PARKING,
                 "is_restrictive": True,
                 "NOM_VOIE": "Rue Test",
             },
@@ -499,7 +510,7 @@ class TestLevelBasedClassification:
         assert tl.iloc[0]["end_dist"] >= 80.0
         # No "restricted" in the 20-80m zone
         restricted_in_middle = right[
-            (right["category"] == IntervalCategory.RESTRICTED)
+            (right["category"] == RESTRICTED)
             & (right["start_dist"] < 80)
             & (right["end_dist"] > 20)
         ]
@@ -533,14 +544,14 @@ class TestLevelBasedClassification:
             "ID_TRC": 1,
             "DESCRIPTION_RPA": "\\P 08h-09h MAR. 1 AVRIL AU 1 DEC.",
             "FLECHE_PAN": 0,
-            "sign_category": SignCategory.STREET_CLEANING,
+            "sign_category": STREET_CLEANING,
             "is_restrictive": False,
             "NOM_VOIE": "Rue Test",
         }])
         intervals = reconstruct_intervals(signs, roads)
         right = intervals[intervals["side"] == "right"]
         # Street cleaning is excluded from classification, so the road should be free
-        assert all(right["category"] == IntervalCategory.FREE)
+        assert all(right["category"] == FREE)
 
     def test_deux_cotes_level3_doesnt_break_level4_zone(self) -> None:
         r"""DEUX COTES copy (level 3) should not break a time_limited (level 4) zone.
@@ -582,7 +593,7 @@ class TestLevelBasedClassification:
                 "ID_TRC": 1,
                 "DESCRIPTION_RPA": "\\P DEUX COTES",
                 "FLECHE_PAN": 0,
-                "sign_category": SignCategory.NO_PARKING,
+                "sign_category": NO_PARKING,
                 "is_restrictive": True,
                 "NOM_VOIE": "Rue Test",
             },
@@ -596,4 +607,4 @@ class TestLevelBasedClassification:
         ]
         cats = middle["category"].unique()
         assert IntervalCategory.TIME_LIMITED in cats, f"Expected time_limited in zone, got {cats}"
-        assert IntervalCategory.RESTRICTED not in cats, "DEUX COTES copy broke time_limited zone"
+        assert RESTRICTED not in cats, "DEUX COTES copy broke time_limited zone"
