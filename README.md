@@ -6,6 +6,8 @@
 
 Interactive map of free street parking in Montreal, built from the city's open data.
 
+> **Disclaimer:** This is a hobby project and is not affiliated with or endorsed by the City of Montreal. Parking data may be incomplete or inaccurate. Always check posted signs before parking.
+
 **[View the live map](https://yfarjoun.github.io/montreal-parking/)**
 
 ## How it works
@@ -50,6 +52,10 @@ pixi run -e dev lint      # ruff check
 pixi run -e dev typecheck # mypy (strict)
 pixi run -e dev format    # ruff format
 ```
+
+## Issues and bug reports
+
+Found a bug or have a feature request? Please [open an issue](https://github.com/yfarjoun/montreal-parking/issues) on GitHub.
 
 ## License
 

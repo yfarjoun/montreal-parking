@@ -10,7 +10,7 @@ from montreal_parking.data import download_data, load_geobase, load_signage
 from montreal_parking.intervals import reconstruct_intervals
 from montreal_parking.map import build_map
 from montreal_parking.snap import snap_poles_to_roads
-from montreal_parking.stats import print_stats
+from montreal_parking.stats import generate_stats_html, print_stats
 
 
 def _parse_args() -> argparse.Namespace:
@@ -21,6 +21,12 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Filter to a specific borough (substring match on NOM_ARROND). "
         "Default: all Montreal.",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="Include debug layers (e.g. DEUX COTES copies) in the map.",
     )
     return parser.parse_args()
 
@@ -63,7 +69,8 @@ def main() -> None:
 
     print("\nStep 6: Building map...")
     OUTPUT_DIR.mkdir(exist_ok=True)
-    build_map(intervals, snapped, unsnapped, roads_gdf=roads_gdf, borough=args.borough)
+    build_map(intervals, snapped, unsnapped, roads_gdf=roads_gdf, borough=args.borough, debug=args.debug)
+    generate_stats_html(intervals, snapped, OUTPUT_DIR / "stats.html")
     print(f"  Map saved to {OUTPUT_DIR}/")
 
 
