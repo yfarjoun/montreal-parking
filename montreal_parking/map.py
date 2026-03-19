@@ -442,6 +442,8 @@ def _build_html_shell(
 
     restoreFromHash();
   </script>
+  <script data-goatcounter="https://yfarjoun.goatcounter.com/count"
+          async src="//gc.zgo.at/count.js"></script>
 </body>
 </html>"""
 

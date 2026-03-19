@@ -211,6 +211,8 @@ def generate_stats_html(
     <a href="https://donnees.montreal.ca/">Montreal Open Data</a>.
     <a href="https://github.com/yfarjoun/montreal-parking">GitHub</a>
   </p>
+  <script data-goatcounter="https://yfarjoun.goatcounter.com/count"
+          async src="//gc.zgo.at/count.js"></script>
 </body>
 </html>"""
 
