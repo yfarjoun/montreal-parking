@@ -276,6 +276,27 @@ def _build_html_shell(
     .info-control a {{
       color: #3498db;
     }}
+    .info-toggle {{
+      display: none;
+      background: white;
+      border: none;
+      border-radius: 50%;
+      width: 28px;
+      height: 28px;
+      font-size: 16px;
+      line-height: 28px;
+      text-align: center;
+      cursor: pointer;
+      box-shadow: 0 1px 5px rgba(0,0,0,0.3);
+      color: #555;
+      padding: 0;
+    }}
+    @media (max-width: 767px) {{
+      .info-toggle {{ display: block; }}
+      .info-control {{ display: none; }}
+      .info-expanded .info-control {{ display: block; }}
+      .info-expanded .info-toggle {{ display: none; }}
+    }}
   </style>
 </head>
 <body>
@@ -363,10 +384,13 @@ def _build_html_shell(
     }}
 
     function renderAll() {{
+      // Don't re-render while a popup is open (pan-to-fit would destroy it)
+      if (map._popup && map._popup.isOpen()) return;
       for (var key in layerData) {{ renderLayer(key); }}
     }}
 
     map.on('moveend', renderAll);
+    map.on('popupclose', renderAll);
     map.on('overlayadd', function(e) {{
       // Find the key for the layer that was just toggled on
       for (var key in layerGroups) {{
@@ -381,7 +405,13 @@ def _build_html_shell(
     {legend_map_js}
     L.control.layers(null, {{
 {overlays_obj}
-    }}, {{collapsed: false}}).addTo(map);
+    }}, {{collapsed: window.innerWidth < 768}}).addTo(map);
+
+    // Collapse layer control when tapping elsewhere on mobile
+    map.on('click', function() {{
+      var el = document.querySelector('.leaflet-control-layers');
+      if (el) el.classList.remove('leaflet-control-layers-expanded');
+    }});
 
     // Inject colored swatches into layer control labels
     document.querySelectorAll('.leaflet-control-layers-overlays label').forEach(function(label) {{
@@ -399,7 +429,11 @@ def _build_html_shell(
     // --- Info box (disclaimer + GitHub link) ---
     var infoControl = L.control({{position: 'bottomleft'}});
     infoControl.onAdd = function() {{
-      var div = L.DomUtil.create('div', 'info-control');
+      var container = L.DomUtil.create('div', 'info-wrapper');
+      var btn = L.DomUtil.create('button', 'info-toggle', container);
+      btn.textContent = '\u24d8';
+      btn.title = 'Info';
+      var div = L.DomUtil.create('div', 'info-control', container);
       div.innerHTML =
         '<b>Montreal Free Parking Finder</b><br>' +
         'Hobby project \u2014 not official. Data may be inaccurate.<br>' +
@@ -408,11 +442,22 @@ def _build_html_shell(
         ' · <a href="https://github.com/yfarjoun/montreal-parking/issues" target="_blank">Report a bug</a>' +
         '<br><span style="color:#aaa;font-size:10px">' +
         'v{__version__}{" \u00b7 data: " + data_date if data_date else ""}</span>';
-      return div;
+      btn.addEventListener('click', function(e) {{
+        e.stopPropagation();
+        container.classList.add('info-expanded');
+      }});
+      L.DomEvent.disableClickPropagation(container);
+      document.addEventListener('click', function() {{
+        container.classList.remove('info-expanded');
+      }});
+      return container;
     }};
     infoControl.addTo(map);
 
     // --- Droppable pin + shareable URL ---
+    var popupJustOpened = false;
+    map.on('popupopen', function() {{ popupJustOpened = true; }});
+
     var droppedPin = null;
 
     // Restore pin and view from URL hash: #lat,lng,zoom or #lat,lng
@@ -442,6 +487,7 @@ def _build_html_shell(
     }}
 
     map.on('click', function(e) {{
+      if (popupJustOpened) {{ popupJustOpened = false; return; }}
       placePin(e.latlng.lat, e.latlng.lng);
     }});
 

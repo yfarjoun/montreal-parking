@@ -3,7 +3,7 @@ authors = ["Yossi Farjoun <yossi@fulcrumgenomics.com>"]
 channels = ["conda-forge"]
 name = "montreal_parking"
 platforms = ["osx-arm64", "linux-64"]
-version = "0.2.0"
+version = "0.2.1"
 
 [dependencies]
 pandas = ">=3.0.1,<4"
