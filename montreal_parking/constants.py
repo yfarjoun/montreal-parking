@@ -2,7 +2,31 @@
 
 from __future__ import annotations
 
+import enum
 from pathlib import Path
+
+
+class SignCategory(enum.StrEnum):
+    """Categories assigned to individual parking signs."""
+
+    NO_PARKING = "no_parking"
+    PERMIT = "permit"
+    PAID = "paid"
+    TIME_LIMITED = "time_limited"
+    STREET_CLEANING = "street_cleaning"
+    UNRESTRICTED = "unrestricted"
+    PANONCEAU = "panonceau"
+    OTHER = "other"
+
+
+class IntervalCategory(enum.StrEnum):
+    """Categories assigned to reconstructed parking intervals on the map."""
+
+    FREE = "free"
+    TIME_LIMITED = "time_limited"
+    PAID = "paid"
+    RESTRICTED = "restricted"
+    NO_DATA = "no_data"
 
 DATA_DIR = Path("data")
 OUTPUT_DIR = Path("output")

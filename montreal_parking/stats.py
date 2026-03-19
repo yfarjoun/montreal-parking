@@ -16,25 +16,26 @@ from montreal_parking.constants import (
     COLOR_PAID,
     COLOR_RESTRICTED,
     COLOR_TIME_LIMITED,
+    IntervalCategory,
 )
 
-_CAT_COLORS: dict[str, str] = {
-    "free": COLOR_FREE,
-    "time_limited": COLOR_TIME_LIMITED,
-    "paid": COLOR_PAID,
-    "restricted": COLOR_RESTRICTED,
-    "no_data": COLOR_NO_DATA,
+_CAT_COLORS: dict[IntervalCategory, str] = {
+    IntervalCategory.FREE: COLOR_FREE,
+    IntervalCategory.TIME_LIMITED: COLOR_TIME_LIMITED,
+    IntervalCategory.PAID: COLOR_PAID,
+    IntervalCategory.RESTRICTED: COLOR_RESTRICTED,
+    IntervalCategory.NO_DATA: COLOR_NO_DATA,
 }
 
-_CAT_LABELS: dict[str, str] = {
-    "free": "Free",
-    "time_limited": "Time-Limited",
-    "paid": "Paid",
-    "restricted": "Restricted",
-    "no_data": "No Data",
+_CAT_LABELS: dict[IntervalCategory, str] = {
+    IntervalCategory.FREE: "Free",
+    IntervalCategory.TIME_LIMITED: "Time-Limited",
+    IntervalCategory.PAID: "Paid",
+    IntervalCategory.RESTRICTED: "Restricted",
+    IntervalCategory.NO_DATA: "No Data",
 }
 
-_CAT_ORDER = ["free", "time_limited", "paid", "restricted", "no_data"]
+_CAT_ORDER = list(IntervalCategory)
 
 
 def print_stats(intervals_gdf: gpd.GeoDataFrame) -> None:
@@ -58,7 +59,7 @@ def print_stats(intervals_gdf: gpd.GeoDataFrame) -> None:
         print(f"  {cat:15s}: {count:5d} intervals ({pct:5.1f}%), {length_km:.1f} km")
 
     if "street_name" in intervals_gdf.columns:
-        free = intervals_gdf[intervals_gdf["category"] == "free"]
+        free = intervals_gdf[intervals_gdf["category"] == IntervalCategory.FREE]
         if not free.empty:
             print("\nTop 10 streets with most free parking (by length):")
             top = (

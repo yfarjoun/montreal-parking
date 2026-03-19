@@ -27,15 +27,16 @@ from montreal_parking.constants import (
     SIMPLIFY_TOLERANCE,
     TILES_ATTR,
     TILES_URL,
+    IntervalCategory,
 )
 
 # Layer configuration: (display name, category key, color, default-on)
-_LAYER_CONFIG: list[tuple[str, str, str, bool]] = [
-    ("Free Parking", "free", COLOR_FREE, True),
-    ("Time-Limited", "time_limited", COLOR_TIME_LIMITED, True),
-    ("Paid Parking", "paid", COLOR_PAID, True),
-    ("Restricted", "restricted", COLOR_RESTRICTED, False),
-    ("No Data", "no_data", COLOR_NO_DATA, False),
+_LAYER_CONFIG: list[tuple[str, IntervalCategory, str, bool]] = [
+    ("Free Parking", IntervalCategory.FREE, COLOR_FREE, True),
+    ("Time-Limited", IntervalCategory.TIME_LIMITED, COLOR_TIME_LIMITED, True),
+    ("Paid Parking", IntervalCategory.PAID, COLOR_PAID, True),
+    ("Restricted", IntervalCategory.RESTRICTED, COLOR_RESTRICTED, False),
+    ("No Data", IntervalCategory.NO_DATA, COLOR_NO_DATA, False),
 ]
 
 
@@ -471,7 +472,7 @@ def build_map(
     # Determine map center and zoom
     if borough and not intervals_wgs.empty:
         # Use non-no_data intervals for centering (no_data gap-fills can span far)
-        signaled = intervals_wgs[intervals_wgs["category"] != "no_data"]
+        signaled = intervals_wgs[intervals_wgs["category"] != IntervalCategory.NO_DATA]
         if signaled.empty:
             signaled = intervals_wgs
         bounds = signaled.total_bounds  # [minx, miny, maxx, maxy]
