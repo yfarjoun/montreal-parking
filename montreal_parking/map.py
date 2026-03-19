@@ -260,6 +260,19 @@ def _build_html_shell(
       height: 10px;
       border-radius: 50%;
     }}
+    .info-control {{
+      background: white;
+      padding: 6px 10px;
+      border-radius: 5px;
+      box-shadow: 0 1px 5px rgba(0,0,0,0.3);
+      font-size: 11px;
+      line-height: 1.6;
+      color: #555;
+      max-width: 280px;
+    }}
+    .info-control a {{
+      color: #3498db;
+    }}
   </style>
 </head>
 <body>
@@ -379,6 +392,19 @@ def _build_html_shell(
       swatch.style.backgroundColor = info.color;
       span.parentNode.insertBefore(swatch, span);
     }});
+
+    // --- Info box (disclaimer + GitHub link) ---
+    var infoControl = L.control({{position: 'bottomleft'}});
+    infoControl.onAdd = function() {{
+      var div = L.DomUtil.create('div', 'info-control');
+      div.innerHTML =
+        '<b>Montreal Free Parking Finder</b><br>' +
+        'Hobby project \u2014 not official. Data may be inaccurate.<br>' +
+        '<a href="https://github.com/yfarjoun/montreal-parking" target="_blank">GitHub</a>' +
+        ' · <a href="https://github.com/yfarjoun/montreal-parking/issues" target="_blank">Report a bug</a>';
+      return div;
+    }};
+    infoControl.addTo(map);
 
     // --- Droppable pin + shareable URL ---
     var droppedPin = null;
