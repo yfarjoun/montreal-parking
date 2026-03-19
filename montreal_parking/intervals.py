@@ -9,7 +9,18 @@ import pandas as pd
 from shapely.ops import substring
 
 from montreal_parking.classify import sign_level
-from montreal_parking.constants import CRS_MTM8, MIN_FREE_EDGE_M
+from montreal_parking.constants import CRS_MTM8, MIN_FREE_EDGE_M, IntervalCategory, SignCategory
+
+# SignCategory members (PAID and TIME_LIMITED omitted — conflict with IntervalCategory)
+NO_PARKING = SignCategory.NO_PARKING
+PERMIT = SignCategory.PERMIT
+UNRESTRICTED = SignCategory.UNRESTRICTED
+STREET_CLEANING = SignCategory.STREET_CLEANING
+
+# IntervalCategory members (PAID and TIME_LIMITED omitted — conflict with SignCategory)
+FREE = IntervalCategory.FREE
+RESTRICTED = IntervalCategory.RESTRICTED
+NO_DATA = IntervalCategory.NO_DATA
 
 
 def _get_signs_for_direction(
@@ -37,17 +48,17 @@ def _classify_level_interval(
     if not active_signs:
         return None
     if level == 3:
-        if any(s["category"] in ("no_parking", "permit") for s in active_signs):
-            return "restricted"
+        if any(s["category"] in (NO_PARKING, PERMIT) for s in active_signs):
+            return RESTRICTED
         return None
     if level == 4:
         categories = {s["category"] for s in active_signs}
-        if "paid" in categories:
-            return "paid"
-        if "time_limited" in categories:
-            return "time_limited"
-        if "unrestricted" in categories:
-            return "free"
+        if SignCategory.PAID in categories:
+            return IntervalCategory.PAID
+        if SignCategory.TIME_LIMITED in categories:
+            return IntervalCategory.TIME_LIMITED
+        if UNRESTRICTED in categories:
+            return FREE
     return None
 
 
@@ -148,13 +159,13 @@ def _merge_level_spans(
                 l3_cat = cat
                 break
 
-        # Level 4 overrides level 3, level 3 overrides default ("free")
+        # Level 4 overrides level 3, level 3 overrides default (free)
         if l4_cat is not None:
             final_cat = l4_cat
         elif l3_cat is not None:
             final_cat = l3_cat
         else:
-            final_cat = "free"
+            final_cat = FREE
 
         result.append((seg_start, seg_end, final_cat, []))
 
@@ -256,10 +267,10 @@ def _build_side_intervals(
     intervals: list[dict[str, Any]] = []
     for start, end, cat, descs in merged:
         # Short edges near intersections can't be free parking
-        if cat == "free" and start == 0.0 and end < MIN_FREE_EDGE_M:
-            cat = "no_data"
-        if cat == "free" and end == road_length and (road_length - start) < MIN_FREE_EDGE_M:
-            cat = "no_data"
+        if cat == FREE and start == 0.0 and end < MIN_FREE_EDGE_M:
+            cat = NO_DATA
+        if cat == FREE and end == road_length and (road_length - start) < MIN_FREE_EDGE_M:
+            cat = NO_DATA
         iv = _make_interval(start, end, cat, descs, road_geom, id_trc, side, street_name)
         if iv:
             intervals.append(iv)
@@ -303,7 +314,7 @@ def reconstruct_intervals(
         # Exclude street_cleaning from classification (kept in snapped data for popups)
         pole_signs: dict[Any, list[dict[str, Any]]] = {}
         for _, sign_row in group.iterrows():
-            if sign_row["sign_category"] == "street_cleaning":
+            if sign_row["sign_category"] == STREET_CLEANING:
                 continue
             pid = sign_row["POTEAU_ID_POT"]
             if pid not in pole_signs:
@@ -360,7 +371,7 @@ def reconstruct_intervals(
                 "start_dist": 0,
                 "end_dist": road_geom.length,
                 "length_m": road_geom.length,
-                "category": "no_data",
+                "category": NO_DATA,
                 "street_name": street_name,
                 "descriptions": "No sign data for this side",
                 "geometry": sub_geom,
@@ -397,7 +408,7 @@ def reconstruct_intervals(
                 "start_dist": 0,
                 "end_dist": road_geom.length,
                 "length_m": road_geom.length,
-                "category": "no_data",
+                "category": NO_DATA,
                 "street_name": street_name,
                 "descriptions": "Short gap segment — no sign data",
                 "geometry": sub_geom,
