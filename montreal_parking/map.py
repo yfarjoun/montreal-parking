@@ -383,14 +383,16 @@ def _build_html_shell(
       }}
     }}
 
+    var skipNextRender = false;
+
     function renderAll() {{
-      // Don't re-render while a popup is open (pan-to-fit would destroy it)
-      if (map._popup && map._popup.isOpen()) return;
+      // Skip one render cycle after popup opens (auto-pan would destroy it)
+      if (skipNextRender) {{ skipNextRender = false; return; }}
       for (var key in layerData) {{ renderLayer(key); }}
     }}
 
+    map.on('popupopen', function() {{ skipNextRender = true; }});
     map.on('moveend', renderAll);
-    map.on('popupclose', renderAll);
     map.on('overlayadd', function(e) {{
       // Find the key for the layer that was just toggled on
       for (var key in layerGroups) {{
