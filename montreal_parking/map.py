@@ -743,12 +743,14 @@ def _build_html_shell(
       btn.addEventListener('mouseleave', function() {{
         if (longPressTimer) {{ clearTimeout(longPressTimer); longPressTimer = null; }}
       }});
-      btn.addEventListener('touchstart', function() {{
+      btn.addEventListener('contextmenu', function(e) {{ e.preventDefault(); }});
+      btn.addEventListener('touchstart', function(e) {{
+        e.preventDefault();
         longPressTimer = setTimeout(function() {{
           longPressTimer = null; longPressTriggered = true;
           if (drivingMode) exitDrivingMode(); else enterDrivingMode();
         }}, 800);
-      }}, {{passive: true}});
+      }});
       btn.addEventListener('touchend', function() {{
         if (longPressTimer) {{ clearTimeout(longPressTimer); longPressTimer = null; }}
       }});
