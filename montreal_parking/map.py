@@ -236,6 +236,14 @@ def _build_html_shell(
     )
     legend_map_js = f"var legendInfo = {{{legend_entries}}};"
 
+    # Category colors for driving mode (line layers only)
+    _cc_entries = ", ".join(
+        f'"{layer["var"]}": "{layer["color"]}"'
+        for layer in layers
+        if not layer.get("is_point")
+    )
+    category_colors_js = f"var categoryColors = {{{_cc_entries}}};"
+
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -297,6 +305,27 @@ def _build_html_shell(
       .info-expanded .info-control {{ display: block; }}
       .info-expanded .info-toggle {{ display: none; }}
     }}
+    .driving-bar {{
+      display: none;
+      position: fixed;
+      top: 0;
+      width: 16px;
+      height: 100%;
+      z-index: 1000;
+      opacity: 0.85;
+      transition: background-color 0.5s;
+      background-color: #888;
+    }}
+    .driving-bar-left {{ left: 0; border-right: 2px solid rgba(0,0,0,0.15); }}
+    .driving-bar-right {{ right: 0; border-left: 2px solid rgba(0,0,0,0.15); }}
+    .driving-active {{
+      background-color: #3498db !important;
+      color: white !important;
+    }}
+    .driving-arrow {{
+      background: none !important;
+      border: none !important;
+    }}
   </style>
 </head>
 <body>
@@ -313,7 +342,7 @@ def _build_html_shell(
     }}).addTo(map);
 
     // GPS locate button
-    L.control.locate({{
+    var locateControl = L.control.locate({{
       position: 'topleft',
       setView: 'once',
       flyTo: true,
@@ -494,6 +523,238 @@ def _build_html_shell(
     }});
 
     restoreFromHash();
+
+    // --- Driving Mode ---
+    {category_colors_js}
+
+    var drivingMode = false;
+    var drivingWatchId = null;
+    var drivingHeading = 0;
+    var drivingPositions = [];
+    var compassHeading = null;
+    var drivingMarker = null;
+    var sideBarLastUpdate = 0;
+    var longPressTriggered = false;
+    var longPressTimer = null;
+
+    // Side bar elements
+    var leftBar = document.createElement('div');
+    leftBar.className = 'driving-bar driving-bar-left';
+    document.body.appendChild(leftBar);
+    var rightBar = document.createElement('div');
+    rightBar.className = 'driving-bar driving-bar-right';
+    document.body.appendChild(rightBar);
+
+    // --- Geo utilities ---
+    function haversineDist(lat1, lng1, lat2, lng2) {{
+      var R = 6371000;
+      var dLat = (lat2 - lat1) * Math.PI / 180;
+      var dLng = (lng2 - lng1) * Math.PI / 180;
+      var a = Math.sin(dLat/2) * Math.sin(dLat/2)
+            + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180)
+              * Math.sin(dLng/2) * Math.sin(dLng/2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }}
+
+    function bearingBetween(lat1, lng1, lat2, lng2) {{
+      var dLng = (lng2 - lng1) * Math.PI / 180;
+      var la1 = lat1 * Math.PI / 180, la2 = lat2 * Math.PI / 180;
+      var y = Math.sin(dLng) * Math.cos(la2);
+      var x = Math.cos(la1) * Math.sin(la2)
+            - Math.sin(la1) * Math.cos(la2) * Math.cos(dLng);
+      return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+    }}
+
+    function sideOfHeading(heading, lat, lng, pLat, pLng) {{
+      var hRad = heading * Math.PI / 180;
+      // Cross product: positive = left, negative = right
+      var cross = Math.sin(hRad) * (pLat - lat) - Math.cos(hRad) * (pLng - lng);
+      return cross > 0 ? 'left' : 'right';
+    }}
+
+    // --- Compass ---
+    function onCompass(e) {{
+      if (e.webkitCompassHeading !== undefined) compassHeading = e.webkitCompassHeading;
+      else if (e.alpha !== null) compassHeading = (360 - e.alpha) % 360;
+    }}
+
+    function startCompass() {{
+      if (typeof DeviceOrientationEvent !== 'undefined'
+          && typeof DeviceOrientationEvent.requestPermission === 'function') {{
+        DeviceOrientationEvent.requestPermission().then(function(s) {{
+          if (s === 'granted') window.addEventListener('deviceorientation', onCompass);
+        }}).catch(function() {{}});
+      }} else if (typeof DeviceOrientationEvent !== 'undefined') {{
+        window.addEventListener('deviceorientation', onCompass);
+      }}
+    }}
+
+    function stopCompass() {{
+      window.removeEventListener('deviceorientation', onCompass);
+      compassHeading = null;
+    }}
+
+    // --- Directional marker ---
+    var arrowIcon = L.divIcon({{
+      className: 'driving-arrow',
+      html: '<svg viewBox="0 0 24 24" width="32" height="32" class="driving-arrow-svg">'
+          + '<polygon points="12,2 4,22 12,17 20,22" fill="#3498db" stroke="#fff" stroke-width="1.5"/></svg>',
+      iconSize: [32, 32],
+      iconAnchor: [16, 16]
+    }});
+
+    function updateDrivingMarker(lat, lng, heading) {{
+      if (!drivingMarker) {{
+        drivingMarker = L.marker([lat, lng], {{icon: arrowIcon, zIndexOffset: 1000}}).addTo(map);
+      }} else {{
+        drivingMarker.setLatLng([lat, lng]);
+      }}
+      var el = drivingMarker.getElement();
+      if (el) {{
+        var svg = el.querySelector('.driving-arrow-svg');
+        if (svg) svg.style.transform = 'rotate(' + heading + 'deg)';
+      }}
+    }}
+
+    // --- Side bar update ---
+    function updateSideBars(lat, lng, heading) {{
+      var closestLeft = {{dist: Infinity, color: null}};
+      var closestRight = {{dist: Infinity, color: null}};
+      var sr = 0.0005; // ~50m in degrees
+      for (var key in layerData) {{
+        if (!layerData[key] || !categoryColors[key]) continue;
+        var color = categoryColors[key];
+        var features = layerData[key].features;
+        for (var i = 0; i < features.length; i++) {{
+          var f = features[i];
+          var coordSets = f.geometry.type === 'MultiLineString' ? f.geometry.coordinates
+                        : f.geometry.type === 'LineString' ? [f.geometry.coordinates] : null;
+          if (!coordSets) continue;
+          for (var s = 0; s < coordSets.length; s++) {{
+            var coords = coordSets[s];
+            // Quick bbox pre-filter
+            var inRange = false;
+            for (var j = 0; j < coords.length; j++) {{
+              if (Math.abs(coords[j][0] - lng) < sr && Math.abs(coords[j][1] - lat) < sr) {{
+                inRange = true; break;
+              }}
+            }}
+            if (!inRange) continue;
+            // Find nearest vertex, classify side
+            for (var j = 0; j < coords.length; j++) {{
+              var d = haversineDist(lat, lng, coords[j][1], coords[j][0]);
+              if (d > 50) continue;
+              var side = sideOfHeading(heading, lat, lng, coords[j][1], coords[j][0]);
+              if (side === 'left' && d < closestLeft.dist) {{
+                closestLeft = {{dist: d, color: color}};
+              }} else if (side === 'right' && d < closestRight.dist) {{
+                closestRight = {{dist: d, color: color}};
+              }}
+            }}
+          }}
+        }}
+      }}
+      leftBar.style.backgroundColor = closestLeft.color || '#888';
+      rightBar.style.backgroundColor = closestRight.color || '#888';
+    }}
+
+    // --- Enter / exit driving mode ---
+    function enterDrivingMode() {{
+      drivingMode = true;
+      leftBar.style.display = 'block';
+      rightBar.style.display = 'block';
+      drivingPositions = [];
+      locateControl.stop();
+      map.setZoom(17);
+      if (!navigator.geolocation) return;
+      drivingWatchId = navigator.geolocation.watchPosition(
+        onDrivingPosition,
+        function() {{}},
+        {{enableHighAccuracy: true, maximumAge: 2000, timeout: 10000}}
+      );
+      startCompass();
+      var btn = document.querySelector('.leaflet-control-locate a');
+      if (btn) btn.classList.add('driving-active');
+    }}
+
+    function exitDrivingMode() {{
+      drivingMode = false;
+      leftBar.style.display = 'none';
+      rightBar.style.display = 'none';
+      if (drivingWatchId !== null) {{
+        navigator.geolocation.clearWatch(drivingWatchId);
+        drivingWatchId = null;
+      }}
+      stopCompass();
+      if (drivingMarker) {{
+        map.removeLayer(drivingMarker);
+        drivingMarker = null;
+      }}
+      var btn = document.querySelector('.leaflet-control-locate a');
+      if (btn) btn.classList.remove('driving-active');
+    }}
+
+    function onDrivingPosition(pos) {{
+      var lat = pos.coords.latitude, lng = pos.coords.longitude;
+      drivingPositions.push({{lat: lat, lng: lng, time: Date.now()}});
+      if (drivingPositions.length > 5) drivingPositions.shift();
+      // Heading from GPS when moving, compass when stationary
+      if (drivingPositions.length >= 2) {{
+        var p1 = drivingPositions[drivingPositions.length - 2];
+        var p2 = drivingPositions[drivingPositions.length - 1];
+        if (haversineDist(p1.lat, p1.lng, p2.lat, p2.lng) > 3) {{
+          drivingHeading = bearingBetween(p1.lat, p1.lng, p2.lat, p2.lng);
+        }} else if (compassHeading !== null) {{
+          drivingHeading = compassHeading;
+        }}
+      }} else if (compassHeading !== null) {{
+        drivingHeading = compassHeading;
+      }}
+      map.setView([lat, lng], Math.max(map.getZoom(), 17), {{animate: true}});
+      updateDrivingMarker(lat, lng, drivingHeading);
+      // Throttle side bar updates to every 2s
+      var now = Date.now();
+      if (now - sideBarLastUpdate > 2000) {{
+        sideBarLastUpdate = now;
+        updateSideBars(lat, lng, drivingHeading);
+      }}
+    }}
+
+    // --- Long-press on locate button ---
+    (function() {{
+      var btn = document.querySelector('.leaflet-control-locate a');
+      if (!btn) return;
+      btn.addEventListener('mousedown', function() {{
+        longPressTimer = setTimeout(function() {{
+          longPressTimer = null; longPressTriggered = true;
+          if (drivingMode) exitDrivingMode(); else enterDrivingMode();
+        }}, 800);
+      }});
+      btn.addEventListener('mouseup', function() {{
+        if (longPressTimer) {{ clearTimeout(longPressTimer); longPressTimer = null; }}
+      }});
+      btn.addEventListener('mouseleave', function() {{
+        if (longPressTimer) {{ clearTimeout(longPressTimer); longPressTimer = null; }}
+      }});
+      btn.addEventListener('touchstart', function() {{
+        longPressTimer = setTimeout(function() {{
+          longPressTimer = null; longPressTriggered = true;
+          if (drivingMode) exitDrivingMode(); else enterDrivingMode();
+        }}, 800);
+      }}, {{passive: true}});
+      btn.addEventListener('touchend', function() {{
+        if (longPressTimer) {{ clearTimeout(longPressTimer); longPressTimer = null; }}
+      }});
+      btn.addEventListener('touchmove', function() {{
+        if (longPressTimer) {{ clearTimeout(longPressTimer); longPressTimer = null; }}
+      }});
+      btn.addEventListener('click', function(e) {{
+        if (longPressTriggered) {{
+          e.stopImmediatePropagation(); e.preventDefault();
+          longPressTriggered = false;
+        }}
+      }}, true);
+    }})();
   </script>
   <script data-goatcounter="https://yfarjoun.goatcounter.com/count"
           async src="//gc.zgo.at/count.js"></script>
