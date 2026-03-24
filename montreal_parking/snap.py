@@ -129,3 +129,53 @@ def snap_poles_to_roads(
         print(f"  Duplicated {len(deux_cotes)} 'DEUX COTES' signs to opposite side")
 
     return result, unsnapped_signs
+
+
+def snap_meters_to_roads(
+    meters_df: pd.DataFrame,
+    roads_gdf: gpd.GeoDataFrame,
+) -> pd.DataFrame:
+    """Snap paid parking meter spaces to their nearest road segment.
+
+    Returns a DataFrame with columns: ID_TRC, projection_distance, side, rate.
+    """
+    meters_gdf = gpd.GeoDataFrame(
+        meters_df,
+        geometry=gpd.points_from_xy(
+            meters_df["nPositionCentreLongitude"],
+            meters_df["nPositionCentreLatitude"],
+        ),
+        crs=CRS_WGS84,
+    )
+    meters_gdf = meters_gdf.to_crs(CRS_MTM8)
+    roads_mtm = roads_gdf.to_crs(CRS_MTM8)
+
+    print(f"  Snapping {len(meters_gdf)} meter spaces to {len(roads_mtm)} road segments...")
+
+    joined = gpd.sjoin_nearest(
+        meters_gdf,
+        roads_mtm[["ID_TRC", "geometry"]],
+        how="left",
+        max_distance=MAX_SNAP_DISTANCE_M,
+        distance_col="snap_distance",
+    )
+
+    # Drop meters that didn't snap
+    unsnapped = joined["ID_TRC"].isna().sum()
+    if unsnapped > 0:
+        print(f"  Warning: {unsnapped} meter spaces didn't snap to any road")
+    joined = joined.dropna(subset=["ID_TRC"])
+    joined["ID_TRC"] = joined["ID_TRC"].astype(int)
+
+    # Compute projection distance and side
+    road_geoms = roads_mtm.set_index("ID_TRC")["geometry"]
+    if joined.empty:
+        return pd.DataFrame(columns=["ID_TRC", "projection_distance", "side", "rate"])
+
+    proj_distances, sides = _compute_projection_and_side(joined, road_geoms)
+    joined["projection_distance"] = proj_distances
+    joined["side"] = sides
+
+    result: pd.DataFrame = joined[["ID_TRC", "projection_distance", "side", "rate"]].copy()
+    print(f"  Snapped {len(result)} meter spaces")
+    return result
