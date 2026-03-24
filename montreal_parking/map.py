@@ -56,15 +56,18 @@ def _export_category_geojson(
     if subset.empty:
         return False
 
-    subset["popup_html"] = subset.apply(
-        lambda row: (
-            f"<b>{row['street_name']}</b><br>"
-            f"Category: {category}<br>"
-            f"Length: {row['length_m']:.0f}m<br>"
-            f"<small>{html.escape(str(row['descriptions'])[:200])}</small>"
-        ),
-        axis=1,
-    )
+    def _popup(row: Any) -> str:
+        lines = [
+            f"<b>{row['street_name']}</b><br>",
+            f"Category: {category}<br>",
+        ]
+        if "rate" in row.index and pd.notna(row.get("rate")):
+            lines.append(f"Rate: ${row['rate']:.2f}/hr<br>")
+        lines.append(f"Length: {row['length_m']:.0f}m<br>")
+        lines.append(f"<small>{html.escape(str(row['descriptions'])[:200])}</small>")
+        return "".join(lines)
+
+    subset["popup_html"] = subset.apply(_popup, axis=1)
     subset = subset[["geometry", "popup_html"]].copy()
     subset["geometry"] = subset["geometry"].simplify(SIMPLIFY_TOLERANCE)
     subset.to_file(dest, driver="GeoJSON")

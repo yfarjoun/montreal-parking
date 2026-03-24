@@ -58,13 +58,20 @@ URLS = {
         "9d3d60d8-4e7f-493e-8d6a-dcd040319d8d/download/"
         "geobase.json"
     ),
+    "paid_places": "https://www.agencemobilitedurable.ca/images/data/Places.csv",
 }
 
 FILENAMES = {
     "signage": "signalisation_stationnement.csv",
     "rpa_codes": "signalisation-codification-rpa.csv",
     "geobase": "geobase.json",
+    "paid_places": "Places.csv",
 }
+
+# Meter snapping: max gap between consecutive meters to merge into one span
+METER_CLUSTER_GAP_M = 30.0
+# Buffer added to each end of a meter cluster span (half a parking space)
+METER_EDGE_BUFFER_M = 5.0
 
 # Map colors
 COLOR_FREE = "#2ecc71"  # green

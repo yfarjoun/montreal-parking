@@ -103,3 +103,18 @@ def load_geobase(path: Path) -> gpd.GeoDataFrame:
     gdf = gpd.read_file(path)
     gdf = gdf[gdf.geometry.type.isin(["LineString", "MultiLineString"])].copy()
     return gdf
+
+
+def load_paid_places(path: Path) -> pd.DataFrame:
+    """Load the paid parking places CSV from Agence de mobilité durable.
+
+    Filters to on-street places (sLocalisation == 'S') with valid coordinates.
+    Converts nTarifHoraire from cents to dollars.
+    """
+    df = pd.read_csv(path, encoding="latin-1", low_memory=False)
+    # Keep only on-street places
+    df = df[df["sLocalisation"] == "S"].copy()
+    df = df.dropna(subset=["nPositionCentreLongitude", "nPositionCentreLatitude"])
+    # Convert rate from cents to dollars
+    df["rate"] = df["nTarifHoraire"] / 100.0
+    return df

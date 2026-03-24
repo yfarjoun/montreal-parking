@@ -6,10 +6,10 @@ import argparse
 
 from montreal_parking.classify import classify_all_signs
 from montreal_parking.constants import DATA_DIR, FILENAMES, OUTPUT_DIR
-from montreal_parking.data import download_data, get_data_date, load_geobase, load_signage
+from montreal_parking.data import download_data, get_data_date, load_geobase, load_paid_places, load_signage
 from montreal_parking.intervals import reconstruct_intervals
 from montreal_parking.map import build_map
-from montreal_parking.snap import snap_poles_to_roads
+from montreal_parking.snap import snap_meters_to_roads, snap_poles_to_roads
 from montreal_parking.stats import generate_stats_html, print_stats
 
 
@@ -62,8 +62,29 @@ def main() -> None:
     if not unsnapped.empty:
         print(f"  Unmatched: {unsnapped['POTEAU_ID_POT'].nunique()} poles")
 
+    print("\nStep 4b: Loading and snapping paid parking meters...")
+    paid_places_path = DATA_DIR / FILENAMES["paid_places"]
+    if paid_places_path.exists():
+        meters_df = load_paid_places(paid_places_path)
+        if args.borough:
+            # Filter meters to bounding box of borough signs (with 200m margin)
+            margin = 0.002  # ~200m in WGS84 degrees
+            lon_min = signs_df["Longitude"].min() - margin
+            lon_max = signs_df["Longitude"].max() + margin
+            lat_min = signs_df["Latitude"].min() - margin
+            lat_max = signs_df["Latitude"].max() + margin
+            meters_df = meters_df[
+                (meters_df["nPositionCentreLongitude"].between(lon_min, lon_max))
+                & (meters_df["nPositionCentreLatitude"].between(lat_min, lat_max))
+            ]
+        print(f"  Loaded {len(meters_df)} on-street meter spaces")
+        snapped_meters = snap_meters_to_roads(meters_df, roads_gdf)
+    else:
+        print("  No paid places data found — skipping meter integration")
+        snapped_meters = None
+
     print("\nStep 5: Reconstructing street intervals...")
-    intervals = reconstruct_intervals(snapped, roads_gdf)
+    intervals = reconstruct_intervals(snapped, roads_gdf, metered_places=snapped_meters)
 
     print_stats(intervals)
 

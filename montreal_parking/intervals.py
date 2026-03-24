@@ -5,11 +5,19 @@ from __future__ import annotations
 from typing import Any
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 from shapely.ops import substring
 
 from montreal_parking.classify import sign_level
-from montreal_parking.constants import CRS_MTM8, MIN_FREE_EDGE_M, IntervalCategory, SignCategory
+from montreal_parking.constants import (
+    CRS_MTM8,
+    METER_CLUSTER_GAP_M,
+    METER_EDGE_BUFFER_M,
+    MIN_FREE_EDGE_M,
+    IntervalCategory,
+    SignCategory,
+)
 
 # SignCategory members (PAID and TIME_LIMITED omitted — conflict with IntervalCategory)
 NO_PARKING = SignCategory.NO_PARKING
@@ -145,12 +153,19 @@ def _merge_level_spans(
 
         mid = (seg_start + seg_end) / 2
 
-        # Find level 4 classification at midpoint
+        # Find level 4 classification at midpoint (highest priority wins:
+        # paid > time_limited > free, so overlapping meter spans beat sign-based free)
+        _l4_priority: dict[str, int] = {
+            IntervalCategory.PAID: 3, IntervalCategory.TIME_LIMITED: 2, FREE: 1,
+        }
         l4_cat: str | None = None
+        l4_rank = 0
         for start, end, cat in level4_spans:
             if start <= mid < end:
-                l4_cat = cat
-                break
+                rank = _l4_priority.get(cat, 0)
+                if rank > l4_rank:
+                    l4_cat = cat
+                    l4_rank = rank
 
         # Find level 3 classification at midpoint
         l3_cat: str | None = None
@@ -190,6 +205,7 @@ def _make_interval(
     id_trc: Any,
     side: str,
     street_name: str,
+    rate: float | None = None,
 ) -> dict[str, Any] | None:
     """Create an interval dict with offset geometry, or None if geometry fails."""
     if end_dist - start_dist < 1.0:
@@ -204,7 +220,7 @@ def _make_interval(
             return None
     except Exception:
         return None
-    return {
+    interval: dict[str, Any] = {
         "id_trc": id_trc,
         "side": side,
         "start_dist": start_dist,
@@ -215,6 +231,52 @@ def _make_interval(
         "descriptions": "; ".join(dict.fromkeys(str(d) for d in descriptions)),
         "geometry": sub_geom,
     }
+    if rate is not None:
+        interval["rate"] = rate
+    return interval
+
+
+def _build_meter_spans(
+    meter_group: pd.DataFrame,
+    road_length: float,
+) -> tuple[list[tuple[float, float, str]], float | None]:
+    """Cluster meter points into paid spans on one (road, side).
+
+    Returns (spans, median_rate) where spans is a list of (start, end, "paid") tuples.
+    Consecutive meters within METER_CLUSTER_GAP_M are merged into one span,
+    with METER_EDGE_BUFFER_M added to each end.
+    """
+    if meter_group.empty:
+        return [], None
+
+    dists: np.ndarray[Any, np.dtype[np.floating[Any]]] = np.sort(
+        meter_group["projection_distance"].to_numpy()
+    )
+    rates = meter_group["rate"].dropna()
+    median_rate = float(rates.median()) if not rates.empty else None
+
+    # Cluster consecutive meters within gap threshold
+    spans: list[tuple[float, float, str]] = []
+    cluster_start = dists[0]
+    cluster_end = dists[0]
+
+    for d in dists[1:]:
+        if d - cluster_end <= METER_CLUSTER_GAP_M:
+            cluster_end = d
+        else:
+            # Emit current cluster
+            s = max(0.0, cluster_start - METER_EDGE_BUFFER_M)
+            e = min(road_length, cluster_end + METER_EDGE_BUFFER_M)
+            spans.append((s, e, IntervalCategory.PAID))
+            cluster_start = d
+            cluster_end = d
+
+    # Emit final cluster
+    s = max(0.0, cluster_start - METER_EDGE_BUFFER_M)
+    e = min(road_length, cluster_end + METER_EDGE_BUFFER_M)
+    spans.append((s, e, IntervalCategory.PAID))
+
+    return spans, median_rate
 
 
 def _build_side_intervals(
@@ -226,6 +288,7 @@ def _build_side_intervals(
     id_trc: Any,
     side: str,
     street_name: str,
+    meter_group: pd.DataFrame | None = None,
 ) -> list[dict[str, Any]]:
     """Build intervals for one (road, side) group from its poles using level-based classification."""
     road_length = road_geom.length
@@ -260,6 +323,12 @@ def _build_side_intervals(
         forward_arrow, backward_arrow, road_length, level=4,
     )
 
+    # Inject meter-derived paid spans into level 4
+    meter_rate: float | None = None
+    if meter_group is not None and not meter_group.empty:
+        meter_spans, meter_rate = _build_meter_spans(meter_group, road_length)
+        level4_spans.extend(meter_spans)
+
     # Merge levels
     merged = _merge_level_spans(level3_spans, level4_spans, road_length)
 
@@ -271,7 +340,9 @@ def _build_side_intervals(
             cat = NO_DATA
         if cat == FREE and end == road_length and (road_length - start) < MIN_FREE_EDGE_M:
             cat = NO_DATA
-        iv = _make_interval(start, end, cat, descs, road_geom, id_trc, side, street_name)
+        # Attach meter rate to paid intervals that came from meter data
+        rate = meter_rate if cat == IntervalCategory.PAID else None
+        iv = _make_interval(start, end, cat, descs, road_geom, id_trc, side, street_name, rate=rate)
         if iv:
             intervals.append(iv)
 
@@ -281,17 +352,27 @@ def _build_side_intervals(
 def reconstruct_intervals(
     snapped_signs: pd.DataFrame,
     roads_gdf: gpd.GeoDataFrame,
+    metered_places: pd.DataFrame | None = None,
 ) -> gpd.GeoDataFrame:
     """For each (ID_TRC, side) group, determine free/restricted intervals.
 
     Returns a GeoDataFrame with one row per interval, including geometry
     (sub-segment of the road), category, and metadata.
+
+    If metered_places is provided (from snap_meters_to_roads), meter-derived
+    paid spans are injected as level-4 overrides.
     """
     roads_mtm = roads_gdf.to_crs(CRS_MTM8)
     road_geoms = roads_mtm.set_index("ID_TRC")["geometry"]
     road_names = roads_mtm.set_index("ID_TRC")["NOM_VOIE"]
 
     intervals: list[dict[str, Any]] = []
+
+    # Pre-group meter data by (ID_TRC, side)
+    meter_groups: dict[tuple[Any, str], pd.DataFrame] = {}
+    if metered_places is not None and not metered_places.empty:
+        for (m_id_trc, m_side), m_group in metered_places.groupby(["ID_TRC", "side"]):
+            meter_groups[(m_id_trc, str(m_side))] = m_group
 
     # Group signs by road segment and side
     grouped = snapped_signs.groupby(["ID_TRC", "side"])
@@ -340,12 +421,38 @@ def reconstruct_intervals(
             _build_side_intervals(
                 pole_data, pole_signs, forward_arrow, backward_arrow,
                 road_geom, id_trc, side, street_name,
+                meter_group=meter_groups.get((id_trc, side)),
             )
         )
 
-    # --- Fill gaps ---
+    # --- Handle meter-only road sides (no sign data) ---
     covered_combos = set(grouped.groups.keys())
+    for (m_id_trc, m_side), m_group in meter_groups.items():
+        if (m_id_trc, m_side) in covered_combos:
+            continue  # already handled above
+        if m_id_trc not in road_geoms.index:
+            continue
+        road_geom = road_geoms.loc[m_id_trc]
+        road_length = road_geom.length
+        if road_length < 1.0:
+            continue
+        street_name = road_names.get(m_id_trc, "Unknown")
+        meter_spans, median_rate = _build_meter_spans(m_group, road_length)
+        for start, end, cat in meter_spans:
+            iv = _make_interval(
+                start, end, cat, [], road_geom, m_id_trc, m_side, street_name,
+                rate=median_rate,
+            )
+            if iv:
+                intervals.append(iv)
+        covered_combos.add((m_id_trc, m_side))
+
+    # --- Fill gaps ---
     covered_segments = snapped_signs["ID_TRC"].unique()
+    # Include segments that only have meters
+    if meter_groups:
+        meter_segment_ids = {k[0] for k in meter_groups}
+        covered_segments = np.union1d(covered_segments, list(meter_segment_ids))
 
     # 1) Segments with poles on one side but not the other
     for id_trc in covered_segments:
