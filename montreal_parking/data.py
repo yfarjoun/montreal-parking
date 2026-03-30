@@ -123,6 +123,9 @@ def _parse_overpass_crossings(data: dict[str, Any]) -> list[LineString]:
     return geoms
 
 
+_CACHE_MAX_AGE_DAYS = 30
+
+
 def download_crossings(
     bbox: tuple[float, float, float, float],
     cache_path: Path | None = None,
@@ -131,67 +134,96 @@ def download_crossings(
 
     Args:
         bbox: (min_lat, min_lon, max_lat, max_lon) in WGS84.
-        cache_path: If provided and exists, load from cache instead of querying.
+        cache_path: If provided and fresh (< 30 days old), load from cache.
 
     Returns GeoDataFrame of crossing LineStrings in CRS_MTM8.
     Falls back to empty GeoDataFrame if the API is unavailable.
     """
     import json
+    import math
+    import time
 
+    # Use cache if fresh enough
     if cache_path and cache_path.exists():
-        with open(cache_path) as f:
-            data = json.load(f)
-        print(f"  [cached] Loaded crossings from {cache_path}")
-        geoms = _parse_overpass_crossings(data)
-    else:
-        # Split large bboxes into tiles to avoid Overpass timeouts.
-        # Each tile gets its own query; results are merged.
-        lat_step = 0.02  # ~2.2 km per tile
-        lon_step = 0.03  # ~2.3 km per tile
-        import math
+        age_days = (time.time() - cache_path.stat().st_mtime) / 86400
+        if age_days < _CACHE_MAX_AGE_DAYS:
+            with open(cache_path) as f:
+                data = json.load(f)
+            print(f"  [cached, {age_days:.0f}d old] Loaded crossings from {cache_path}")
+            geoms = _parse_overpass_crossings(data)
+            if not geoms:
+                return gpd.GeoDataFrame(geometry=[], crs=CRS_MTM8)
+            gdf = gpd.GeoDataFrame(geometry=geoms, crs=CRS_WGS84).to_crs(CRS_MTM8)
+            print(f"  {len(gdf)} crossings loaded")
+            return gdf
+        print(f"  [stale, {age_days:.0f}d old] Re-downloading crossings...")
 
-        min_lat, min_lon, max_lat, max_lon = bbox
-        lat_tiles = max(1, math.ceil((max_lat - min_lat) / lat_step))
-        lon_tiles = max(1, math.ceil((max_lon - min_lon) / lon_step))
-        total_tiles = lat_tiles * lon_tiles
-        print(f"  Querying Overpass API in {total_tiles} tile(s)...")
+    # Split large bboxes into tiles to avoid Overpass timeouts.
+    lat_step = 0.05  # ~5.5 km per tile
+    lon_step = 0.08  # ~6 km per tile
 
-        all_elements: list[dict[str, object]] = []
-        for i in range(lat_tiles):
-            for j in range(lon_tiles):
-                tile_min_lat = min_lat + i * lat_step
-                tile_max_lat = min(min_lat + (i + 1) * lat_step, max_lat)
-                tile_min_lon = min_lon + j * lon_step
-                tile_max_lon = min(min_lon + (j + 1) * lon_step, max_lon)
-                query = (
-                    f'[out:json][timeout:120];'
-                    f'way["highway"="footway"]["footway"="crossing"]'
-                    f'({tile_min_lat},{tile_min_lon},{tile_max_lat},{tile_max_lon});'
-                    f'out body;>;out skel qt;'
+    min_lat, min_lon, max_lat, max_lon = bbox
+    lat_tiles = max(1, math.ceil((max_lat - min_lat) / lat_step))
+    lon_tiles = max(1, math.ceil((max_lon - min_lon) / lon_step))
+    total_tiles = lat_tiles * lon_tiles
+    print(f"  Querying Overpass API in {total_tiles} tile(s)...")
+
+    all_elements: list[dict[str, object]] = []
+    failed = 0
+    for idx, (i, j) in enumerate(
+        (i, j) for i in range(lat_tiles) for j in range(lon_tiles)
+    ):
+        if idx > 0:
+            time.sleep(2)  # rate-limit: 2s between requests
+
+        tile_bbox = (
+            min_lat + i * lat_step,
+            min_lon + j * lon_step,
+            min(min_lat + (i + 1) * lat_step, max_lat),
+            min(min_lon + (j + 1) * lon_step, max_lon),
+        )
+        query = (
+            f'[out:json][timeout:180];'
+            f'way["highway"="footway"]["footway"="crossing"]'
+            f'({tile_bbox[0]},{tile_bbox[1]},{tile_bbox[2]},{tile_bbox[3]});'
+            f'out body;>;out skel qt;'
+        )
+        try:
+            resp = requests.post(
+                "https://overpass-api.de/api/interpreter",
+                data={"data": query},
+                timeout=240,
+            )
+            if resp.status_code == 429:
+                # Back off on rate limit
+                print("  Rate limited, waiting 30s...")
+                time.sleep(30)
+                resp = requests.post(
+                    "https://overpass-api.de/api/interpreter",
+                    data={"data": query},
+                    timeout=240,
                 )
-                try:
-                    resp = requests.post(
-                        "https://overpass-api.de/api/interpreter",
-                        data={"data": query},
-                        timeout=180,
-                    )
-                    resp.raise_for_status()
-                    tile_data = resp.json()
-                    all_elements.extend(tile_data.get("elements", []))
-                except requests.RequestException as e:
-                    print(f"  Warning: Overpass tile query failed: {e}")
+            resp.raise_for_status()
+            tile_data = resp.json()
+            all_elements.extend(tile_data.get("elements", []))
+        except requests.RequestException as e:
+            failed += 1
+            print(f"  Warning: Overpass tile {idx + 1}/{total_tiles} failed: {e}")
 
-        if not all_elements:
-            print("  Warning: No crossings data available — skipping intersection trimming")
-            return gpd.GeoDataFrame(geometry=[], crs=CRS_MTM8)
+    if failed:
+        print(f"  {failed}/{total_tiles} tiles failed")
 
-        data = {"elements": all_elements}
-        if cache_path:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(cache_path, "w") as f:
-                json.dump(data, f)
-        print("  Downloaded crossings from Overpass API")
-        geoms = _parse_overpass_crossings(data)
+    if not all_elements:
+        print("  Warning: No crossings data available — skipping intersection trimming")
+        return gpd.GeoDataFrame(geometry=[], crs=CRS_MTM8)
+
+    data = {"elements": all_elements}
+    if cache_path:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(data, f)
+    print("  Downloaded crossings from Overpass API")
+    geoms = _parse_overpass_crossings(data)
 
     if not geoms:
         return gpd.GeoDataFrame(geometry=[], crs=CRS_MTM8)
