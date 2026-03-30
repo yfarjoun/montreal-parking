@@ -38,6 +38,10 @@ MAX_SNAP_DISTANCE_M = 20.0
 
 # Edge intervals shorter than this are too close to an intersection to be free parking
 MIN_FREE_EDGE_M = 5.0
+# Buffer beyond crosswalk where parking is prohibited (QC Highway Safety Code)
+CROSSWALK_NO_PARK_M = 5.0
+# Max distance from road endpoint to search for crosswalks
+CROSSWALK_SEARCH_RADIUS_M = 5.0
 
 URLS = {
     "signage": (

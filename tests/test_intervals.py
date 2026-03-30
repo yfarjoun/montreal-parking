@@ -746,3 +746,117 @@ class TestMeterIntegration:
         intervals_none = reconstruct_intervals(signs, roads, metered_places=None)
         intervals_default = reconstruct_intervals(signs, roads)
         assert len(intervals_none) == len(intervals_default)
+
+
+# ---------------------------------------------------------------------------
+# Crosswalk intersection trimming
+# ---------------------------------------------------------------------------
+
+
+def _make_crossings(
+    road: gpd.GeoDataFrame,
+    positions: list[float],
+) -> gpd.GeoDataFrame:
+    """Create synthetic crosswalk LineStrings perpendicular to the road.
+
+    positions: list of distances along the road where crossings should be placed.
+    """
+    road_geom = road.iloc[0].geometry
+    crossings = []
+    for d in positions:
+        pt = road_geom.interpolate(d)
+        # Perpendicular crossing (±10m north/south of the road)
+        crossings.append(LineString([
+            (pt.x, pt.y - 10),
+            (pt.x, pt.y + 10),
+        ]))
+    return gpd.GeoDataFrame(geometry=crossings, crs=CRS_MTM8)
+
+
+class TestCrosswalkTrimming:
+    """Tests for crosswalk-based intersection trimming of free intervals."""
+
+    def test_free_edge_trimmed_by_crosswalk(self) -> None:
+        """Free interval at road edge should become no_data when crosswalk exists."""
+        roads = _make_road(length=100)
+        # Unrestricted sign in the middle
+        signs = _make_signs_df([{
+            "POTEAU_ID_POT": 1,
+            "projection_distance": 50.0,
+            "side": "right",
+            "ID_TRC": 1,
+            "DESCRIPTION_RPA": "P",
+            "FLECHE_PAN": 0,
+            "sign_category": UNRESTRICTED,
+            "is_restrictive": False,
+            "NOM_VOIE": "Rue Test",
+        }])
+        # Crosswalks at 8m from start and 8m from end
+        crossings = _make_crossings(roads, [8.0, 92.0])
+        intervals = reconstruct_intervals(signs, roads, crossings=crossings)
+        right = intervals[intervals["side"] == "right"]
+        # The 0-8m and 92-100m zones should not be free
+        edge_start = right[right["start_dist"] < 13]  # 8m crossing + 5m buffer = 13m trim
+        for _, row in edge_start.iterrows():
+            if row["end_dist"] <= 13.0:
+                assert row["category"] == NO_DATA
+
+    def test_free_middle_preserved_with_crosswalks(self) -> None:
+        """Free interval in the middle of the road should not be affected by crosswalks."""
+        roads = _make_road(length=200)
+        signs = _make_signs_df([{
+            "POTEAU_ID_POT": 1,
+            "projection_distance": 100.0,
+            "side": "right",
+            "ID_TRC": 1,
+            "DESCRIPTION_RPA": "P",
+            "FLECHE_PAN": 0,
+            "sign_category": UNRESTRICTED,
+            "is_restrictive": False,
+            "NOM_VOIE": "Rue Test",
+        }])
+        crossings = _make_crossings(roads, [10.0, 190.0])
+        intervals = reconstruct_intervals(signs, roads, crossings=crossings)
+        right = intervals[intervals["side"] == "right"]
+        free = right[right["category"] == FREE]
+        assert not free.empty, "Middle of road should still be free"
+
+    def test_no_crossings_preserves_old_behavior(self) -> None:
+        """Without crossings, the old MIN_FREE_EDGE_M rule should still apply."""
+        roads = _make_road(length=100)
+        signs = _make_signs_df([{
+            "POTEAU_ID_POT": 1,
+            "projection_distance": 10.0,
+            "side": "right",
+            "ID_TRC": 1,
+            "DESCRIPTION_RPA": "\\P",
+            "FLECHE_PAN": 2,
+            "sign_category": NO_PARKING,
+            "is_restrictive": True,
+            "NOM_VOIE": "Rue Test",
+        }])
+        intervals_no_cx = reconstruct_intervals(signs, roads, crossings=None)
+        intervals_default = reconstruct_intervals(signs, roads)
+        assert len(intervals_no_cx) == len(intervals_default)
+
+    def test_all_categories_trimmed_by_crosswalk(self) -> None:
+        """All interval categories should be clamped to the usable road range."""
+        roads = _make_road(length=100)
+        signs = _make_signs_df([{
+            "POTEAU_ID_POT": 1,
+            "projection_distance": 50.0,
+            "side": "right",
+            "ID_TRC": 1,
+            "DESCRIPTION_RPA": "\\P",
+            "FLECHE_PAN": 0,
+            "sign_category": NO_PARKING,
+            "is_restrictive": True,
+            "NOM_VOIE": "Rue Test",
+        }])
+        # Crosswalks at 8m and 92m → usable range is [13, 87]
+        crossings = _make_crossings(roads, [8.0, 92.0])
+        intervals = reconstruct_intervals(signs, roads, crossings=crossings)
+        right = intervals[intervals["side"] == "right"]
+        # No interval should start before 13m or end after 87m
+        assert all(right["start_dist"] >= 12.9), "Intervals should not extend into start intersection"
+        assert all(right["end_dist"] <= 87.1), "Intervals should not extend into end intersection"

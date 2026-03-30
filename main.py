@@ -6,7 +6,14 @@ import argparse
 
 from montreal_parking.classify import classify_all_signs
 from montreal_parking.constants import DATA_DIR, FILENAMES, OUTPUT_DIR
-from montreal_parking.data import download_data, get_data_date, load_geobase, load_paid_places, load_signage
+from montreal_parking.data import (
+    download_crossings,
+    download_data,
+    get_data_date,
+    load_geobase,
+    load_paid_places,
+    load_signage,
+)
 from montreal_parking.intervals import reconstruct_intervals
 from montreal_parking.map import build_map
 from montreal_parking.snap import snap_meters_to_roads, snap_poles_to_roads
@@ -83,8 +90,21 @@ def main() -> None:
         print("  No paid places data found — skipping meter integration")
         snapped_meters = None
 
+    print("\nStep 4c: Downloading pedestrian crossings from OpenStreetMap...")
+    # Compute bbox from sign data (or full Montreal)
+    margin = 0.002  # ~200m buffer
+    bbox = (
+        signs_df["Latitude"].min() - margin,
+        signs_df["Longitude"].min() - margin,
+        signs_df["Latitude"].max() + margin,
+        signs_df["Longitude"].max() + margin,
+    )
+    crossings = download_crossings(bbox, cache_path=DATA_DIR / "crossings.json")
+
     print("\nStep 5: Reconstructing street intervals...")
-    intervals = reconstruct_intervals(snapped, roads_gdf, metered_places=snapped_meters)
+    intervals = reconstruct_intervals(
+        snapped, roads_gdf, metered_places=snapped_meters, crossings=crossings,
+    )
 
     print_stats(intervals)
 

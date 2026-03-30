@@ -7,8 +7,9 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 import requests
+from shapely.geometry import LineString
 
-from montreal_parking.constants import DATA_DIR, FILENAMES, URLS
+from montreal_parking.constants import CRS_MTM8, CRS_WGS84, DATA_DIR, FILENAMES, URLS
 
 
 def _last_modified_path(dest: Path) -> Path:
@@ -102,6 +103,62 @@ def load_geobase(path: Path) -> gpd.GeoDataFrame:
     """Load the geobase GeoJSON with road centerlines."""
     gdf = gpd.read_file(path)
     gdf = gdf[gdf.geometry.type.isin(["LineString", "MultiLineString"])].copy()
+    return gdf
+
+
+def download_crossings(
+    bbox: tuple[float, float, float, float],
+    cache_path: Path | None = None,
+) -> gpd.GeoDataFrame:
+    """Download pedestrian crossings from OpenStreetMap via Overpass API.
+
+    Args:
+        bbox: (min_lat, min_lon, max_lat, max_lon) in WGS84.
+        cache_path: If provided and exists, load from cache instead of querying.
+
+    Returns GeoDataFrame of crossing LineStrings in CRS_MTM8.
+    """
+    import json
+
+    if cache_path and cache_path.exists():
+        with open(cache_path) as f:
+            data = json.load(f)
+        print(f"  [cached] Loaded crossings from {cache_path}")
+    else:
+        query = (
+            f'[out:json][timeout:60];'
+            f'way["highway"="footway"]["footway"="crossing"]'
+            f'({bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]});'
+            f'out body;>;out skel qt;'
+        )
+        resp = requests.post(
+            "https://overpass-api.de/api/interpreter",
+            data={"data": query},
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if cache_path:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, "w") as f:
+                json.dump(data, f)
+        print("  Downloaded crossings from Overpass API")
+
+    elements = data.get("elements", [])
+    nodes = {e["id"]: (e["lon"], e["lat"]) for e in elements if e["type"] == "node"}
+    ways = [e for e in elements if e["type"] == "way"]
+
+    geoms: list[LineString] = []
+    for w in ways:
+        coords = [nodes[nid] for nid in w["nodes"] if nid in nodes]
+        if len(coords) >= 2:
+            geoms.append(LineString(coords))
+
+    if not geoms:
+        return gpd.GeoDataFrame(geometry=[], crs=CRS_MTM8)
+
+    gdf = gpd.GeoDataFrame(geometry=geoms, crs=CRS_WGS84).to_crs(CRS_MTM8)
+    print(f"  {len(gdf)} crossings loaded")
     return gdf
 
 
