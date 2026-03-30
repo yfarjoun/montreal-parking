@@ -11,6 +11,8 @@ from shapely.ops import substring
 
 from montreal_parking.classify import sign_level
 from montreal_parking.constants import (
+    CROSSWALK_NO_PARK_M,
+    CROSSWALK_SEARCH_RADIUS_M,
     CRS_MTM8,
     METER_CLUSTER_GAP_M,
     METER_EDGE_BUFFER_M,
@@ -236,6 +238,79 @@ def _make_interval(
     return interval
 
 
+def compute_road_trim_limits(
+    roads_mtm: gpd.GeoDataFrame,
+    crossings: gpd.GeoDataFrame,
+) -> dict[Any, tuple[float, float]]:
+    """Compute the usable parking range for each road segment based on crosswalk positions.
+
+    For each road endpoint, finds the nearest crosswalk within CROSSWALK_SEARCH_RADIUS_M,
+    projects it onto the road, and adds CROSSWALK_NO_PARK_M buffer. Intervals outside
+    this range are inside the intersection.
+
+    Returns dict mapping ID_TRC -> (min_usable_dist, max_usable_dist).
+    """
+    if crossings.empty:
+        return {}
+
+    road_geoms = roads_mtm.set_index("ID_TRC")["geometry"]
+    trim_limits: dict[Any, tuple[float, float]] = {}
+
+    # Build spatial index on crossings for faster lookups
+    cx_sindex = crossings.sindex
+
+    for id_trc, road_geom in road_geoms.items():
+        road_length = road_geom.length
+        if road_length < 1.0:
+            continue
+
+        start_pt = road_geom.interpolate(0)
+        end_pt = road_geom.interpolate(road_length)
+
+        # Find crossings near each endpoint
+        min_dist = 0.0
+        max_dist = road_length
+
+        for endpoint, is_start in [(start_pt, True), (end_pt, False)]:
+            # Query spatial index for candidates near this endpoint
+            buf = endpoint.buffer(CROSSWALK_SEARCH_RADIUS_M + 20)
+            candidate_idxs = list(cx_sindex.intersection(buf.bounds))
+            if not candidate_idxs:
+                continue
+
+            candidates = crossings.iloc[candidate_idxs]
+            nearby = candidates[candidates.intersects(road_geom.buffer(CROSSWALK_SEARCH_RADIUS_M))]
+            if nearby.empty:
+                continue
+
+            # Project each crossing onto the road, keep those near this endpoint
+            best_proj: float | None = None
+            for _, cx in nearby.iterrows():
+                inter = road_geom.buffer(CROSSWALK_SEARCH_RADIUS_M).intersection(cx.geometry)
+                if inter.is_empty:
+                    continue
+                proj = road_geom.project(inter.centroid)
+                # Is this crossing near the start or end?
+                if is_start and proj < road_length * 0.3:
+                    if best_proj is None or proj > best_proj:
+                        best_proj = proj  # furthest crossing near start
+                elif not is_start and proj > road_length * 0.7 and (
+                    best_proj is None or proj < best_proj
+                ):
+                    best_proj = proj  # nearest crossing near end
+
+            if best_proj is not None:
+                if is_start:
+                    min_dist = best_proj + CROSSWALK_NO_PARK_M
+                else:
+                    max_dist = best_proj - CROSSWALK_NO_PARK_M
+
+        if min_dist > 0.0 or max_dist < road_length:
+            trim_limits[id_trc] = (min_dist, max_dist)
+
+    return trim_limits
+
+
 def _build_meter_spans(
     meter_group: pd.DataFrame,
     road_length: float,
@@ -289,6 +364,7 @@ def _build_side_intervals(
     side: str,
     street_name: str,
     meter_group: pd.DataFrame | None = None,
+    trim_limits: tuple[float, float] | None = None,
 ) -> list[dict[str, Any]]:
     """Build intervals for one (road, side) group from its poles using level-based classification."""
     road_length = road_geom.length
@@ -332,14 +408,24 @@ def _build_side_intervals(
     # Merge levels
     merged = _merge_level_spans(level3_spans, level4_spans, road_length)
 
-    # Apply 5m edge rule and build geometry
+    # Apply intersection trim and build geometry
     intervals: list[dict[str, Any]] = []
     for start, end, cat, descs in merged:
-        # Short edges near intersections can't be free parking
-        if cat == FREE and start == 0.0 and end < MIN_FREE_EDGE_M:
-            cat = NO_DATA
-        if cat == FREE and end == road_length and (road_length - start) < MIN_FREE_EDGE_M:
-            cat = NO_DATA
+        if trim_limits is not None:
+            trim_start, trim_end = trim_limits
+            # Clamp interval to the usable (non-intersection) portion of the road
+            clamped_start = max(start, trim_start)
+            clamped_end = min(end, trim_end)
+            if clamped_start >= clamped_end:
+                # Entire interval is inside the intersection — skip it
+                continue
+            start, end = clamped_start, clamped_end
+        elif cat == FREE:
+            # Legacy fallback: only suppress very short free edges at road boundaries
+            if start == 0.0 and end < MIN_FREE_EDGE_M:
+                cat = NO_DATA
+            if end == road_length and (road_length - start) < MIN_FREE_EDGE_M:
+                cat = NO_DATA
         # Attach meter rate to paid intervals that came from meter data
         rate = meter_rate if cat == IntervalCategory.PAID else None
         iv = _make_interval(start, end, cat, descs, road_geom, id_trc, side, street_name, rate=rate)
@@ -353,6 +439,7 @@ def reconstruct_intervals(
     snapped_signs: pd.DataFrame,
     roads_gdf: gpd.GeoDataFrame,
     metered_places: pd.DataFrame | None = None,
+    crossings: gpd.GeoDataFrame | None = None,
 ) -> gpd.GeoDataFrame:
     """For each (ID_TRC, side) group, determine free/restricted intervals.
 
@@ -361,12 +448,21 @@ def reconstruct_intervals(
 
     If metered_places is provided (from snap_meters_to_roads), meter-derived
     paid spans are injected as level-4 overrides.
+
+    If crossings is provided (from download_crossings), free intervals near
+    intersections are trimmed based on crosswalk positions + 5m buffer.
     """
     roads_mtm = roads_gdf.to_crs(CRS_MTM8)
     road_geoms = roads_mtm.set_index("ID_TRC")["geometry"]
     road_names = roads_mtm.set_index("ID_TRC")["NOM_VOIE"]
 
     intervals: list[dict[str, Any]] = []
+
+    # Compute crosswalk-based trim limits per road segment
+    road_trim_limits: dict[Any, tuple[float, float]] = {}
+    if crossings is not None and not crossings.empty:
+        road_trim_limits = compute_road_trim_limits(roads_mtm, crossings)
+        print(f"  Computed crosswalk trim limits for {len(road_trim_limits)} road segments")
 
     # Pre-group meter data by (ID_TRC, side)
     meter_groups: dict[tuple[Any, str], pd.DataFrame] = {}
@@ -422,6 +518,7 @@ def reconstruct_intervals(
                 pole_data, pole_signs, forward_arrow, backward_arrow,
                 road_geom, id_trc, side, street_name,
                 meter_group=meter_groups.get((id_trc, side)),
+                trim_limits=road_trim_limits.get(id_trc),
             )
         )
 
