@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import geopandas as gpd
 import pandas as pd
@@ -106,6 +107,22 @@ def load_geobase(path: Path) -> gpd.GeoDataFrame:
     return gdf
 
 
+def _parse_overpass_crossings(data: dict[str, Any]) -> list[LineString]:
+    """Extract crossing LineStrings from Overpass JSON response."""
+    elements: list[dict[str, Any]] = data.get("elements", [])
+    nodes: dict[Any, tuple[Any, Any]] = {
+        e["id"]: (e["lon"], e["lat"]) for e in elements if e["type"] == "node"
+    }
+    ways = [e for e in elements if e["type"] == "way"]
+
+    geoms: list[LineString] = []
+    for w in ways:
+        coords = [nodes[nid] for nid in w["nodes"] if nid in nodes]
+        if len(coords) >= 2:
+            geoms.append(LineString(coords))
+    return geoms
+
+
 def download_crossings(
     bbox: tuple[float, float, float, float],
     cache_path: Path | None = None,
@@ -117,6 +134,7 @@ def download_crossings(
         cache_path: If provided and exists, load from cache instead of querying.
 
     Returns GeoDataFrame of crossing LineStrings in CRS_MTM8.
+    Falls back to empty GeoDataFrame if the API is unavailable.
     """
     import json
 
@@ -124,35 +142,56 @@ def download_crossings(
         with open(cache_path) as f:
             data = json.load(f)
         print(f"  [cached] Loaded crossings from {cache_path}")
+        geoms = _parse_overpass_crossings(data)
     else:
-        query = (
-            f'[out:json][timeout:60];'
-            f'way["highway"="footway"]["footway"="crossing"]'
-            f'({bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]});'
-            f'out body;>;out skel qt;'
-        )
-        resp = requests.post(
-            "https://overpass-api.de/api/interpreter",
-            data={"data": query},
-            timeout=120,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        # Split large bboxes into tiles to avoid Overpass timeouts.
+        # Each tile gets its own query; results are merged.
+        lat_step = 0.02  # ~2.2 km per tile
+        lon_step = 0.03  # ~2.3 km per tile
+        import math
+
+        min_lat, min_lon, max_lat, max_lon = bbox
+        lat_tiles = max(1, math.ceil((max_lat - min_lat) / lat_step))
+        lon_tiles = max(1, math.ceil((max_lon - min_lon) / lon_step))
+        total_tiles = lat_tiles * lon_tiles
+        print(f"  Querying Overpass API in {total_tiles} tile(s)...")
+
+        all_elements: list[dict[str, object]] = []
+        for i in range(lat_tiles):
+            for j in range(lon_tiles):
+                tile_min_lat = min_lat + i * lat_step
+                tile_max_lat = min(min_lat + (i + 1) * lat_step, max_lat)
+                tile_min_lon = min_lon + j * lon_step
+                tile_max_lon = min(min_lon + (j + 1) * lon_step, max_lon)
+                query = (
+                    f'[out:json][timeout:120];'
+                    f'way["highway"="footway"]["footway"="crossing"]'
+                    f'({tile_min_lat},{tile_min_lon},{tile_max_lat},{tile_max_lon});'
+                    f'out body;>;out skel qt;'
+                )
+                try:
+                    resp = requests.post(
+                        "https://overpass-api.de/api/interpreter",
+                        data={"data": query},
+                        timeout=180,
+                    )
+                    resp.raise_for_status()
+                    tile_data = resp.json()
+                    all_elements.extend(tile_data.get("elements", []))
+                except requests.RequestException as e:
+                    print(f"  Warning: Overpass tile query failed: {e}")
+
+        if not all_elements:
+            print("  Warning: No crossings data available — skipping intersection trimming")
+            return gpd.GeoDataFrame(geometry=[], crs=CRS_MTM8)
+
+        data = {"elements": all_elements}
         if cache_path:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             with open(cache_path, "w") as f:
                 json.dump(data, f)
         print("  Downloaded crossings from Overpass API")
-
-    elements = data.get("elements", [])
-    nodes = {e["id"]: (e["lon"], e["lat"]) for e in elements if e["type"] == "node"}
-    ways = [e for e in elements if e["type"] == "way"]
-
-    geoms: list[LineString] = []
-    for w in ways:
-        coords = [nodes[nid] for nid in w["nodes"] if nid in nodes]
-        if len(coords) >= 2:
-            geoms.append(LineString(coords))
+        geoms = _parse_overpass_crossings(data)
 
     if not geoms:
         return gpd.GeoDataFrame(geometry=[], crs=CRS_MTM8)
