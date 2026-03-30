@@ -755,7 +755,11 @@ def _build_html_shell(
         }}, 800);
       }});
       btn.addEventListener('touchend', function() {{
-        if (longPressTimer) {{ clearTimeout(longPressTimer); longPressTimer = null; }}
+        if (longPressTimer) {{
+          // Short tap: timer still running, so trigger normal locate click
+          clearTimeout(longPressTimer); longPressTimer = null;
+          btn.click();
+        }}
       }});
       btn.addEventListener('touchmove', function() {{
         if (longPressTimer) {{ clearTimeout(longPressTimer); longPressTimer = null; }}
