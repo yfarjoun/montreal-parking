@@ -145,8 +145,12 @@ Overlay layer + JS:
 - Add a new overlay entry **"Cleaning ≤24h"** to the existing
   `L.control.layers` overlays, **off by default**.
 - When enabled, JS loads `cleaning.geojson`, filters to features whose schedule
-  intersects `[now, now + 24h]`, and renders them with a distinct highlight style
-  (e.g. an orange casing / thicker outline) drawn above the base category lines.
+  intersects `[now, now + 24h]`, and renders them as a **black dashed line drawn
+  on top of** the existing colored category line. The dash pattern lets the
+  underlying category color show through the gaps — it marks the segment as
+  "cleaning soon" without replacing its color. (Leaflet path style:
+  `color: '#000'`, `dashArray`, and a weight equal to or slightly less than the
+  base line so the category color remains visible around it.)
 - Recompute on `overlayadd` and on a periodic timer (so a page left open crosses
   into a new cleaning window correctly).
 - "Now" and the seasonal check are computed in **Montreal time**
