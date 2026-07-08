@@ -40,9 +40,10 @@ Tool configuration (pytest, ruff, mypy) lives in `pyproject.toml`.
 | `constants.py` | URLs, CRS strings, file paths, colors, thresholds, tile config                                                                            |
 | `data.py`      | Download datasets and load signage CSV / geobase GeoJSON                                                                                  |
 | `classify.py`  | Regex-based sign classification → `no_parking`, `permit`, `paid`, `time_limited`, `street_cleaning`, `unrestricted`, `panonceau`, `other` |
+| `cleaning.py`  | Parse French street-cleaning sign text into structured schedules (weekday/time/season) + English formatting                               |
 | `snap.py`      | Spatial join (sjoin_nearest) in metric CRS, vectorized projection distance + left/right side via cross product, DEUX COTES duplication    |
-| `intervals.py` | Walk poles in chainage order per (road, side), arrow-based interval classification, gap filling                                           |
-| `map.py`       | Export category GeoJSON files + lightweight HTML shell with Leaflet, GPS locate button                                                     |
+| `intervals.py` | Walk poles in chainage order per (road, side), arrow-based interval classification, gap filling; attaches street-cleaning schedules to segments as metadata |
+| `map.py`       | Export category GeoJSON files + lightweight HTML shell with Leaflet, GPS locate button, "Cleaning ≤24h" dashed overlay (client-side Montreal-time window) |
 | `stats.py`     | Summary statistics printing                                                                                                               |
 
 ## Key Design Decisions
@@ -55,6 +56,7 @@ Tool configuration (pytest, ruff, mypy) lives in `pyproject.toml`.
 - **External GeoJSON**: map output is a lightweight HTML shell (~50 KB) that fetches per-category GeoJSON via `fetch()`, keeping total payload manageable at city scale.
 - **Tiles**: CartoDB Positron (free, no ToS issues).
 - **GPS**: Leaflet LocateControl plugin for phone geolocation.
+- **Street cleaning**: cleaning signs are parsed into structured schedules at build time and attached to interval segments (without changing category). The "Cleaning ≤24h" overlay computes the next-24h window client-side in Montreal time and draws a black dashed line over affected segments.
 
 ## Output Structure
 
@@ -65,6 +67,7 @@ output/
     free.geojson
     time_limited.geojson
     restricted.geojson
+    cleaning.geojson
     no_data.geojson
     poles.geojson
     unmatched_poles.geojson
