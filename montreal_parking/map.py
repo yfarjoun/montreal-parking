@@ -13,6 +13,7 @@ import pandas as pd
 import shapely
 
 from montreal_parking import __version__
+from montreal_parking.cleaning import format_schedule, parse_cleaning
 from montreal_parking.constants import (
     COLOR_FREE,
     COLOR_NO_DATA,
@@ -28,6 +29,7 @@ from montreal_parking.constants import (
     TILES_ATTR,
     TILES_URL,
     IntervalCategory,
+    SignCategory,
 )
 
 FREE = IntervalCategory.FREE
@@ -64,6 +66,10 @@ def _export_category_geojson(
         if "rate" in row.index and pd.notna(row.get("rate")):
             lines.append(f"Rate: ${row['rate']:.2f}/hr<br>")
         lines.append(f"Length: {row['length_m']:.0f}m<br>")
+        if "cleaning_text" in row.index and row.get("cleaning_text"):
+            lines.append(
+                f"\U0001f9f9 {html.escape(str(row['cleaning_text']))}<br>"
+            )
         lines.append(f"<small>{html.escape(str(row['descriptions'])[:200])}</small>")
         return "".join(lines)
 
@@ -72,6 +78,49 @@ def _export_category_geojson(
     subset["geometry"] = subset["geometry"].simplify(SIMPLIFY_TOLERANCE)
     subset.to_file(dest, driver="GeoJSON")
     print(f"    {category}: {len(subset)} features -> {dest} ({dest.stat().st_size / 1e6:.1f} MB)")
+    return True
+
+
+def _export_cleaning_geojson(
+    intervals_wgs: gpd.GeoDataFrame,
+    dest: Path,
+) -> bool:
+    """Export intervals that carry a parsed cleaning schedule to GeoJSON.
+
+    One feature per interval with a non-empty structured schedule. Properties:
+    popup_html, cleaning (list of CleaningSchedule dicts), cleaning_text.
+    Returns True if non-empty.
+    """
+    if "cleaning" not in intervals_wgs.columns:
+        return False
+    mask = intervals_wgs["cleaning"].apply(
+        lambda c: isinstance(c, list) and len(c) > 0
+    )
+    subset = intervals_wgs[mask].copy()
+    if subset.empty:
+        return False
+
+    subset["geometry"] = subset["geometry"].simplify(SIMPLIFY_TOLERANCE)
+    features = []
+    for _, row in subset.iterrows():
+        text = str(row.get("cleaning_text", ""))
+        popup = (
+            f"<b>{html.escape(str(row['street_name']))}</b><br>"
+            f"\U0001f9f9 {html.escape(text)}"
+        )
+        features.append({
+            "type": "Feature",
+            "geometry": shapely.geometry.mapping(row["geometry"]),
+            "properties": {
+                "popup_html": popup,
+                "cleaning": row["cleaning"],
+                "cleaning_text": text,
+            },
+        })
+
+    with open(dest, "w") as f:
+        json.dump({"type": "FeatureCollection", "features": features}, f)
+    print(f"    cleaning: {len(features)} features -> {dest}")
     return True
 
 
@@ -91,14 +140,20 @@ def _build_pole_geojson(
     has_side = group_by_side and "side" in signs_df.columns
     group_cols: list[str] = ["POTEAU_ID_POT", "side"] if has_side else ["POTEAU_ID_POT"]
 
+    def _sign_line(row: Any) -> str:
+        desc = str(row["DESCRIPTION_RPA"])
+        arrow = arrow_display.get(row["FLECHE_PAN"], "")
+        cat = row["sign_category"]
+        if cat == SignCategory.STREET_CLEANING:
+            sched = parse_cleaning(desc)
+            if sched is not None:
+                return f"{arrow} {cat}: {html.escape(format_schedule(sched))}"
+        return f"{arrow} {cat}: {html.escape(desc)}"
+
     sign_html: dict[Any, str] = (
         signs_df.groupby(group_cols)
         .apply(  # type: ignore[call-overload]
-            lambda g: "<br>".join(
-                f"{arrow_display.get(row['FLECHE_PAN'], '')} {row['sign_category']}: "
-                + html.escape(str(row["DESCRIPTION_RPA"]))
-                for _, row in g.iterrows()
-            ),
+            lambda g: "<br>".join(_sign_line(row) for _, row in g.iterrows()),
             include_groups=False,
         )
         .to_dict()
