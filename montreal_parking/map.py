@@ -256,16 +256,25 @@ def _build_html_shell(
         name = layer["name"]
         color = layer["color"]
         is_point = layer.get("is_point", False)
+        is_cleaning = layer.get("is_cleaning", False)
 
         layer_keys.append(var)
 
-        opts = (
-            f"pointToLayer: function(f, ll) {{"
-            f" return L.circleMarker(ll, {{radius:3,color:'{color}',"
-            f"fillColor:'{color}',fillOpacity:0.7}}); }}"
-            if is_point
-            else f"style: {{color:'{color}',weight:5,opacity:0.8,lineCap:'butt'}}"
-        )
+        if is_cleaning:
+            opts = (
+                "filter: function(f) { return f.properties "
+                "&& isCleaningSoon(f.properties.cleaning); }, "
+                "style: {color:'#000',weight:3,opacity:0.9,"
+                "dashArray:'6,6',lineCap:'butt'}"
+            )
+        elif is_point:
+            opts = (
+                f"pointToLayer: function(f, ll) {{"
+                f" return L.circleMarker(ll, {{radius:3,color:'{color}',"
+                f"fillColor:'{color}',fillOpacity:0.7}}); }}"
+            )
+        else:
+            opts = f"style: {{color:'{color}',weight:5,opacity:0.8,lineCap:'butt'}}"
 
         layer_fetch_parts.append(f"""
     // {name}
@@ -301,13 +310,20 @@ def _build_html_shell(
     )
     legend_map_js = f"var legendInfo = {{{legend_entries}}};"
 
-    # Category colors for driving mode (line layers only)
+    # Category colors for driving mode (line layers only; exclude cleaning overlay)
     _cc_entries = ", ".join(
         f'"{layer["var"]}": "{layer["color"]}"'
         for layer in layers
-        if not layer.get("is_point")
+        if not layer.get("is_point") and not layer.get("is_cleaning")
     )
     category_colors_js = f"var categoryColors = {{{_cc_entries}}};"
+
+    cleaning_layer = next((lyr for lyr in layers if lyr.get("is_cleaning")), None)
+    cleaning_refresh_js = (
+        f"setInterval(function() {{ renderLayer('{cleaning_layer['var']}'); }}, 600000);"
+        if cleaning_layer
+        else ""
+    )
 
     return f"""<!DOCTYPE html>
 <html>
@@ -494,9 +510,68 @@ def _build_html_shell(
       }}
     }});
 
+    // --- Street-cleaning "next 24h" (Montreal time) ---
+    function montrealNow() {{
+      var fmt = new Intl.DateTimeFormat('en-CA', {{
+        timeZone: 'America/Toronto', hour12: false,
+        year: 'numeric', month: 'numeric', day: 'numeric',
+        hour: 'numeric', minute: 'numeric', weekday: 'short'
+      }});
+      var parts = {{}};
+      fmt.formatToParts(new Date()).forEach(function(p) {{ parts[p.type] = p.value; }});
+      var wdMap = {{Sun:6, Mon:0, Tue:1, Wed:2, Thu:3, Fri:4, Sat:5}};
+      return {{
+        year: +parts.year, month: +parts.month, day: +parts.day,
+        hour: (+parts.hour) % 24, minute: +parts.minute,
+        weekday: wdMap[parts.weekday]
+      }};
+    }}
+
+    function addDays(now, d) {{
+      var base = new Date(Date.UTC(now.year, now.month - 1, now.day));
+      base.setUTCDate(base.getUTCDate() + d);
+      return {{
+        month: base.getUTCMonth() + 1,
+        day: base.getUTCDate(),
+        weekday: (base.getUTCDay() + 6) % 7  // JS Sun=0 → Mon=0
+      }};
+    }}
+
+    function inMonthRange(month, day, ms, me) {{
+      function key(m, d) {{ return m * 100 + d; }}
+      var k = key(month, day), a = key(ms[0], ms[1]), b = key(me[0], me[1]);
+      if (a <= b) return k >= a && k <= b;
+      return k >= a || k <= b;  // wraps year end
+    }}
+
+    function scheduleSoon(s, now) {{
+      var nowMin = now.hour * 60 + now.minute;
+      var horizonEnd = nowMin + 1440;  // +24h, in minutes from today's midnight
+      for (var d = 0; d <= 1; d++) {{
+        var dt = addDays(now, d);
+        if (s.weekdays.indexOf(dt.weekday) === -1) continue;
+        if (!inMonthRange(dt.month, dt.day, s.month_start, s.month_end)) continue;
+        var winStart = d * 1440 + s.start_min;
+        var winEnd = d * 1440 + s.end_min;
+        if (winEnd > nowMin && winStart < horizonEnd) return true;
+      }}
+      return false;
+    }}
+
+    function isCleaningSoon(cleaning) {{
+      if (!cleaning || !cleaning.length) return false;
+      var now = montrealNow();
+      for (var i = 0; i < cleaning.length; i++) {{
+        if (scheduleSoon(cleaning[i], now)) return true;
+      }}
+      return false;
+    }}
+
 {layers_init}
 
 {default_adds}
+
+    {cleaning_refresh_js}
 
     {legend_map_js}
     L.control.layers(null, {{
@@ -874,6 +949,18 @@ def build_map(
                 "color": color,
                 "default_on": default_on,
             })
+
+    # Cleaning overlay (off by default; JS filters to the next 24h)
+    cleaning_dest = data_dir / "cleaning.geojson"
+    if _export_cleaning_geojson(intervals_wgs, cleaning_dest):
+        layers.append({
+            "var": "layer_cleaning",
+            "file": "cleaning.geojson",
+            "name": "Cleaning ≤24h",
+            "color": "#000",
+            "default_on": False,
+            "is_cleaning": True,
+        })
 
     # Export poles GeoJSON (off by default), excluding DEUX COTES copies
     original_signs = signs_df
