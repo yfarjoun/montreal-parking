@@ -303,9 +303,11 @@ def _build_html_shell(
     )
     overlays_obj = "\n".join(overlay_js_parts)
 
-    # Build JS object mapping layer display name → {color, isPoint}
+    # Build JS object mapping layer display name → {color, isPoint, isCleaning}
     legend_entries = ", ".join(
-        f'"{layer["name"]}": {{color:"{layer["color"]}", isPoint:{str(layer.get("is_point", False)).lower()}}}'
+        f'"{layer["name"]}": {{color:"{layer["color"]}", '
+        f'isPoint:{str(layer.get("is_point", False)).lower()}, '
+        f'isCleaning:{str(layer.get("is_cleaning", False)).lower()}}}'
         for layer in layers
     )
     legend_map_js = f"var legendInfo = {{{legend_entries}}};"
@@ -592,8 +594,14 @@ def _build_html_shell(
       var info = legendInfo[name];
       if (!info) return;
       var swatch = document.createElement('span');
-      swatch.className = 'legend-swatch ' + (info.isPoint ? 'legend-swatch-dot' : 'legend-swatch-line');
-      swatch.style.backgroundColor = info.color;
+      if (info.isCleaning) {{
+        swatch.className = 'legend-swatch legend-swatch-line';
+        swatch.style.background = 'repeating-linear-gradient(to right, '
+          + info.color + ' 0 4px, transparent 4px 8px)';
+      }} else {{
+        swatch.className = 'legend-swatch ' + (info.isPoint ? 'legend-swatch-dot' : 'legend-swatch-line');
+        swatch.style.backgroundColor = info.color;
+      }}
       span.parentNode.insertBefore(swatch, span);
     }});
 
