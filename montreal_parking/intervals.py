@@ -10,6 +10,7 @@ import pandas as pd
 from shapely.ops import substring
 
 from montreal_parking.classify import sign_level
+from montreal_parking.cleaning import CleaningSchedule, format_schedule, parse_cleaning
 from montreal_parking.constants import (
     CROSSWALK_NO_PARK_M,
     CROSSWALK_SEARCH_RADIUS_M,
@@ -129,24 +130,85 @@ def _walk_level_spans(
     return spans
 
 
+def _walk_cleaning_spans(
+    pole_data: pd.DataFrame,
+    pole_cleaning: dict[Any, list[dict[str, Any]]],
+    forward_arrow: int,
+    backward_arrow: int,
+    road_length: float,
+) -> list[tuple[float, float, list[dict[str, Any]]]]:
+    """Walk poles and produce spans annotated with active cleaning items.
+
+    Each span is (start, end, items); items is a list of cleaning dicts
+    ({"schedule": CleaningSchedule | None, "text": str}) active over that span.
+    Spans with no active cleaning are omitted. Mirrors _walk_level_spans and
+    uses the same forward/backward arrow convention.
+    """
+    if pole_data.empty:
+        return []
+
+    spans: list[tuple[float, float, list[dict[str, Any]]]] = []
+
+    def _get(pole_id: Any, direction: str) -> list[dict[str, Any]]:
+        arrow = forward_arrow if direction == "forward" else backward_arrow
+        return [s for s in pole_cleaning.get(pole_id, []) if s["arrow"] in (arrow, 0)]
+
+    first = pole_data.iloc[0]
+    first_dist = float(first["projection_distance"])
+    if first_dist > 1.0:
+        items = _get(first["POTEAU_ID_POT"], "backward")
+        if items:
+            spans.append((0.0, first_dist, items))
+
+    for i in range(len(pole_data) - 1):
+        p1 = pole_data.iloc[i]
+        p2 = pole_data.iloc[i + 1]
+        items = _get(p1["POTEAU_ID_POT"], "forward") + _get(p2["POTEAU_ID_POT"], "backward")
+        if items:
+            spans.append((
+                float(p1["projection_distance"]),
+                float(p2["projection_distance"]),
+                items,
+            ))
+
+    last = pole_data.iloc[-1]
+    last_dist = float(last["projection_distance"])
+    if road_length - last_dist > 1.0:
+        items = _get(last["POTEAU_ID_POT"], "forward")
+        if items:
+            spans.append((last_dist, road_length, items))
+
+    return spans
+
+
+def _cleaning_key(items: list[dict[str, Any]]) -> frozenset[str]:
+    """Stable signature of a span's cleaning items, by display text."""
+    return frozenset(item["text"] for item in items)
+
+
 def _merge_level_spans(
     level3_spans: list[tuple[float, float, str]],
     level4_spans: list[tuple[float, float, str]],
+    cleaning_spans: list[tuple[float, float, list[dict[str, Any]]]],
     road_length: float,
-) -> list[tuple[float, float, str, list[str]]]:
-    """Merge level 3 and level 4 spans. Level 4 overrides level 3; level 3 overrides default (free).
+) -> list[tuple[float, float, str, list[str], list[dict[str, Any]]]]:
+    """Merge level-3/4 spans and overlay cleaning metadata.
 
-    Returns list of (start, end, category, descriptions) tuples covering [0, road_length].
+    Level 4 overrides level 3; level 3 overrides default (free). Cleaning spans
+    add boundaries and attach items but never change the category. Returns
+    (start, end, category, descriptions, cleaning_items) covering [0, road_length].
     """
-    # Collect all boundary points
     boundaries: set[float] = {0.0, road_length}
     for spans in (level3_spans, level4_spans):
         for start, end, _ in spans:
             boundaries.add(start)
             boundaries.add(end)
+    for start, end, _items in cleaning_spans:
+        boundaries.add(start)
+        boundaries.add(end)
     sorted_bounds = sorted(boundaries)
 
-    result: list[tuple[float, float, str, list[str]]] = []
+    result: list[tuple[float, float, str, list[str], list[dict[str, Any]]]] = []
     for i in range(len(sorted_bounds) - 1):
         seg_start = sorted_bounds[i]
         seg_end = sorted_bounds[i + 1]
@@ -155,8 +217,6 @@ def _merge_level_spans(
 
         mid = (seg_start + seg_end) / 2
 
-        # Find level 4 classification at midpoint (highest priority wins:
-        # paid > time_limited > free, so overlapping meter spans beat sign-based free)
         _l4_priority: dict[str, int] = {
             IntervalCategory.PAID: 3, IntervalCategory.TIME_LIMITED: 2, FREE: 1,
         }
@@ -169,14 +229,12 @@ def _merge_level_spans(
                     l4_cat = cat
                     l4_rank = rank
 
-        # Find level 3 classification at midpoint
         l3_cat: str | None = None
         for start, end, cat in level3_spans:
             if start <= mid < end:
                 l3_cat = cat
                 break
 
-        # Level 4 overrides level 3, level 3 overrides default (free)
         if l4_cat is not None:
             final_cat = l4_cat
         elif l3_cat is not None:
@@ -184,14 +242,23 @@ def _merge_level_spans(
         else:
             final_cat = FREE
 
-        result.append((seg_start, seg_end, final_cat, []))
+        cleaning_items: list[dict[str, Any]] = []
+        for start, end, items in cleaning_spans:
+            if start <= mid < end:
+                cleaning_items.extend(items)
 
-    # Merge adjacent spans with the same category
-    merged: list[tuple[float, float, str, list[str]]] = []
+        result.append((seg_start, seg_end, final_cat, [], cleaning_items))
+
+    # Merge adjacent spans with the same category AND same cleaning signature.
+    merged: list[tuple[float, float, str, list[str], list[dict[str, Any]]]] = []
     for span in result:
-        if merged and merged[-1][2] == span[2]:
+        if (
+            merged
+            and merged[-1][2] == span[2]
+            and _cleaning_key(merged[-1][4]) == _cleaning_key(span[4])
+        ):
             prev = merged[-1]
-            merged[-1] = (prev[0], span[1], prev[2], prev[3])
+            merged[-1] = (prev[0], span[1], prev[2], prev[3], prev[4])
         else:
             merged.append(span)
 
@@ -208,6 +275,8 @@ def _make_interval(
     side: str,
     street_name: str,
     rate: float | None = None,
+    cleaning: list[CleaningSchedule] | None = None,
+    cleaning_text: str = "",
 ) -> dict[str, Any] | None:
     """Create an interval dict with offset geometry, or None if geometry fails."""
     if end_dist - start_dist < 1.0:
@@ -231,6 +300,8 @@ def _make_interval(
         "category": category,
         "street_name": street_name,
         "descriptions": "; ".join(dict.fromkeys(str(d) for d in descriptions)),
+        "cleaning": cleaning if cleaning is not None else [],
+        "cleaning_text": cleaning_text,
         "geometry": sub_geom,
     }
     if rate is not None:
@@ -364,6 +435,7 @@ def _build_side_intervals(
     side: str,
     street_name: str,
     meter_group: pd.DataFrame | None = None,
+    pole_cleaning: dict[Any, list[dict[str, Any]]] | None = None,
     trim_limits: tuple[float, float] | None = None,
 ) -> list[dict[str, Any]]:
     """Build intervals for one (road, side) group from its poles using level-based classification."""
@@ -405,12 +477,24 @@ def _build_side_intervals(
         meter_spans, meter_rate = _build_meter_spans(meter_group, road_length)
         level4_spans.extend(meter_spans)
 
+    # Build cleaning spans (poles that carry a cleaning sign).
+    pole_cleaning = pole_cleaning or {}
+    cleaning_pids = set(pole_cleaning.keys())
+    if cleaning_pids:
+        c_mask = pole_data["POTEAU_ID_POT"].isin(cleaning_pids)
+        cleaning_pole_data = pole_data[c_mask].reset_index(drop=True)
+    else:
+        cleaning_pole_data = pole_data.iloc[0:0]
+    cleaning_spans = _walk_cleaning_spans(
+        cleaning_pole_data, pole_cleaning, forward_arrow, backward_arrow, road_length,
+    )
+
     # Merge levels
-    merged = _merge_level_spans(level3_spans, level4_spans, road_length)
+    merged = _merge_level_spans(level3_spans, level4_spans, cleaning_spans, road_length)
 
     # Apply intersection trim and build geometry
     intervals: list[dict[str, Any]] = []
-    for start, end, cat, descs in merged:
+    for start, end, cat, descs, cleaning_items in merged:
         if trim_limits is not None:
             trim_start, trim_end = trim_limits
             # Clamp interval to the usable (non-intersection) portion of the road
@@ -428,7 +512,18 @@ def _build_side_intervals(
                 cat = NO_DATA
         # Attach meter rate to paid intervals that came from meter data
         rate = meter_rate if cat == IntervalCategory.PAID else None
-        iv = _make_interval(start, end, cat, descs, road_geom, id_trc, side, street_name, rate=rate)
+        # Dedup cleaning items by display text, preserving order.
+        unique_items: dict[str, dict[str, Any]] = {}
+        for item in cleaning_items:
+            unique_items.setdefault(item["text"], item)
+        schedules = [
+            it["schedule"] for it in unique_items.values() if it["schedule"] is not None
+        ]
+        cleaning_text = "; ".join(unique_items.keys())
+        iv = _make_interval(
+            start, end, cat, descs, road_geom, id_trc, side, street_name,
+            rate=rate, cleaning=schedules, cleaning_text=cleaning_text,
+        )
         if iv:
             intervals.append(iv)
 
@@ -487,16 +582,24 @@ def reconstruct_intervals(
             .reset_index()
         )
 
-        # Build lookup: pole_id -> list of sign info dicts
-        # Exclude street_cleaning from classification (kept in snapped data for popups)
+        # Build lookups: pole_id -> sign info (classification) and cleaning info.
+        # Street cleaning is excluded from classification but captured for popups
+        # and the 24h overlay.
         pole_signs: dict[Any, list[dict[str, Any]]] = {}
+        pole_cleaning: dict[Any, list[dict[str, Any]]] = {}
         for _, sign_row in group.iterrows():
-            if sign_row["sign_category"] == STREET_CLEANING:
-                continue
             pid = sign_row["POTEAU_ID_POT"]
-            if pid not in pole_signs:
-                pole_signs[pid] = []
-            pole_signs[pid].append({
+            if sign_row["sign_category"] == STREET_CLEANING:
+                desc = str(sign_row["DESCRIPTION_RPA"])
+                sched = parse_cleaning(desc)
+                text = format_schedule(sched) if sched is not None else desc
+                pole_cleaning.setdefault(pid, []).append({
+                    "schedule": sched,
+                    "text": text,
+                    "arrow": sign_row.get("FLECHE_PAN", 0),
+                })
+                continue
+            pole_signs.setdefault(pid, []).append({
                 "category": sign_row["sign_category"],
                 "description": sign_row["DESCRIPTION_RPA"],
                 "arrow": sign_row.get("FLECHE_PAN", 0),
@@ -518,6 +621,7 @@ def reconstruct_intervals(
                 pole_data, pole_signs, forward_arrow, backward_arrow,
                 road_geom, id_trc, side, street_name,
                 meter_group=meter_groups.get((id_trc, side)),
+                pole_cleaning=pole_cleaning,
                 trim_limits=road_trim_limits.get(id_trc),
             )
         )
@@ -578,6 +682,8 @@ def reconstruct_intervals(
                 "category": NO_DATA,
                 "street_name": street_name,
                 "descriptions": "No sign data for this side",
+                "cleaning": [],
+                "cleaning_text": "",
                 "geometry": sub_geom,
             })
 
@@ -615,6 +721,8 @@ def reconstruct_intervals(
                 "category": NO_DATA,
                 "street_name": street_name,
                 "descriptions": "Short gap segment — no sign data",
+                "cleaning": [],
+                "cleaning_text": "",
                 "geometry": sub_geom,
             })
 
@@ -624,7 +732,8 @@ def reconstruct_intervals(
         return gpd.GeoDataFrame(
             columns=[
                 "id_trc", "side", "start_dist", "end_dist", "length_m",
-                "category", "street_name", "descriptions", "geometry",
+                "category", "street_name", "descriptions",
+                "cleaning", "cleaning_text", "geometry",
             ],
             crs=CRS_MTM8,
         )

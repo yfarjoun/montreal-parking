@@ -13,6 +13,7 @@ import pandas as pd
 import shapely
 
 from montreal_parking import __version__
+from montreal_parking.cleaning import format_schedule, parse_cleaning
 from montreal_parking.constants import (
     COLOR_FREE,
     COLOR_NO_DATA,
@@ -28,6 +29,7 @@ from montreal_parking.constants import (
     TILES_ATTR,
     TILES_URL,
     IntervalCategory,
+    SignCategory,
 )
 
 FREE = IntervalCategory.FREE
@@ -64,6 +66,10 @@ def _export_category_geojson(
         if "rate" in row.index and pd.notna(row.get("rate")):
             lines.append(f"Rate: ${row['rate']:.2f}/hr<br>")
         lines.append(f"Length: {row['length_m']:.0f}m<br>")
+        if "cleaning_text" in row.index and row.get("cleaning_text"):
+            lines.append(
+                f"\U0001f9f9 {html.escape(str(row['cleaning_text']))}<br>"
+            )
         lines.append(f"<small>{html.escape(str(row['descriptions'])[:200])}</small>")
         return "".join(lines)
 
@@ -72,6 +78,49 @@ def _export_category_geojson(
     subset["geometry"] = subset["geometry"].simplify(SIMPLIFY_TOLERANCE)
     subset.to_file(dest, driver="GeoJSON")
     print(f"    {category}: {len(subset)} features -> {dest} ({dest.stat().st_size / 1e6:.1f} MB)")
+    return True
+
+
+def _export_cleaning_geojson(
+    intervals_wgs: gpd.GeoDataFrame,
+    dest: Path,
+) -> bool:
+    """Export intervals that carry a parsed cleaning schedule to GeoJSON.
+
+    One feature per interval with a non-empty structured schedule. Properties:
+    popup_html, cleaning (list of CleaningSchedule dicts), cleaning_text.
+    Returns True if non-empty.
+    """
+    if "cleaning" not in intervals_wgs.columns:
+        return False
+    mask = intervals_wgs["cleaning"].apply(
+        lambda c: isinstance(c, list) and len(c) > 0
+    )
+    subset = intervals_wgs[mask].copy()
+    if subset.empty:
+        return False
+
+    subset["geometry"] = subset["geometry"].simplify(SIMPLIFY_TOLERANCE)
+    features = []
+    for _, row in subset.iterrows():
+        text = str(row.get("cleaning_text", ""))
+        popup = (
+            f"<b>{html.escape(str(row['street_name']))}</b><br>"
+            f"\U0001f9f9 {html.escape(text)}"
+        )
+        features.append({
+            "type": "Feature",
+            "geometry": shapely.geometry.mapping(row["geometry"]),
+            "properties": {
+                "popup_html": popup,
+                "cleaning": row["cleaning"],
+                "cleaning_text": text,
+            },
+        })
+
+    with open(dest, "w") as f:
+        json.dump({"type": "FeatureCollection", "features": features}, f)
+    print(f"    cleaning: {len(features)} features -> {dest}")
     return True
 
 
@@ -91,14 +140,20 @@ def _build_pole_geojson(
     has_side = group_by_side and "side" in signs_df.columns
     group_cols: list[str] = ["POTEAU_ID_POT", "side"] if has_side else ["POTEAU_ID_POT"]
 
+    def _sign_line(row: Any) -> str:
+        desc = str(row["DESCRIPTION_RPA"])
+        arrow = arrow_display.get(row["FLECHE_PAN"], "")
+        cat = row["sign_category"]
+        if cat == SignCategory.STREET_CLEANING:
+            sched = parse_cleaning(desc)
+            if sched is not None:
+                return f"{arrow} {cat}: {html.escape(format_schedule(sched))}"
+        return f"{arrow} {cat}: {html.escape(desc)}"
+
     sign_html: dict[Any, str] = (
         signs_df.groupby(group_cols)
         .apply(  # type: ignore[call-overload]
-            lambda g: "<br>".join(
-                f"{arrow_display.get(row['FLECHE_PAN'], '')} {row['sign_category']}: "
-                + html.escape(str(row["DESCRIPTION_RPA"]))
-                for _, row in g.iterrows()
-            ),
+            lambda g: "<br>".join(_sign_line(row) for _, row in g.iterrows()),
             include_groups=False,
         )
         .to_dict()
@@ -201,16 +256,25 @@ def _build_html_shell(
         name = layer["name"]
         color = layer["color"]
         is_point = layer.get("is_point", False)
+        is_cleaning = layer.get("is_cleaning", False)
 
         layer_keys.append(var)
 
-        opts = (
-            f"pointToLayer: function(f, ll) {{"
-            f" return L.circleMarker(ll, {{radius:3,color:'{color}',"
-            f"fillColor:'{color}',fillOpacity:0.7}}); }}"
-            if is_point
-            else f"style: {{color:'{color}',weight:5,opacity:0.8,lineCap:'butt'}}"
-        )
+        if is_cleaning:
+            opts = (
+                "filter: function(f) { return f.properties "
+                "&& isCleaningSoon(f.properties.cleaning); }, "
+                "style: {color:'#000',weight:3,opacity:0.9,"
+                "dashArray:'6,6',lineCap:'butt'}"
+            )
+        elif is_point:
+            opts = (
+                f"pointToLayer: function(f, ll) {{"
+                f" return L.circleMarker(ll, {{radius:3,color:'{color}',"
+                f"fillColor:'{color}',fillOpacity:0.7}}); }}"
+            )
+        else:
+            opts = f"style: {{color:'{color}',weight:5,opacity:0.8,lineCap:'butt'}}"
 
         layer_fetch_parts.append(f"""
     // {name}
@@ -239,20 +303,29 @@ def _build_html_shell(
     )
     overlays_obj = "\n".join(overlay_js_parts)
 
-    # Build JS object mapping layer display name → {color, isPoint}
+    # Build JS object mapping layer display name → {color, isPoint, isCleaning}
     legend_entries = ", ".join(
-        f'"{layer["name"]}": {{color:"{layer["color"]}", isPoint:{str(layer.get("is_point", False)).lower()}}}'
+        f'"{layer["name"]}": {{color:"{layer["color"]}", '
+        f'isPoint:{str(layer.get("is_point", False)).lower()}, '
+        f'isCleaning:{str(layer.get("is_cleaning", False)).lower()}}}'
         for layer in layers
     )
     legend_map_js = f"var legendInfo = {{{legend_entries}}};"
 
-    # Category colors for driving mode (line layers only)
+    # Category colors for driving mode (line layers only; exclude cleaning overlay)
     _cc_entries = ", ".join(
         f'"{layer["var"]}": "{layer["color"]}"'
         for layer in layers
-        if not layer.get("is_point")
+        if not layer.get("is_point") and not layer.get("is_cleaning")
     )
     category_colors_js = f"var categoryColors = {{{_cc_entries}}};"
+
+    cleaning_layer = next((lyr for lyr in layers if lyr.get("is_cleaning")), None)
+    cleaning_refresh_js = (
+        f"setInterval(function() {{ renderLayer('{cleaning_layer['var']}'); }}, 600000);"
+        if cleaning_layer
+        else ""
+    )
 
     return f"""<!DOCTYPE html>
 <html>
@@ -439,9 +512,68 @@ def _build_html_shell(
       }}
     }});
 
+    // --- Street-cleaning "next 24h" (Montreal time) ---
+    function montrealNow() {{
+      var fmt = new Intl.DateTimeFormat('en-CA', {{
+        timeZone: 'America/Toronto', hour12: false,
+        year: 'numeric', month: 'numeric', day: 'numeric',
+        hour: 'numeric', minute: 'numeric', weekday: 'short'
+      }});
+      var parts = {{}};
+      fmt.formatToParts(new Date()).forEach(function(p) {{ parts[p.type] = p.value; }});
+      var wdMap = {{Sun:6, Mon:0, Tue:1, Wed:2, Thu:3, Fri:4, Sat:5}};
+      return {{
+        year: +parts.year, month: +parts.month, day: +parts.day,
+        hour: (+parts.hour) % 24, minute: +parts.minute,
+        weekday: wdMap[parts.weekday]
+      }};
+    }}
+
+    function addDays(now, d) {{
+      var base = new Date(Date.UTC(now.year, now.month - 1, now.day));
+      base.setUTCDate(base.getUTCDate() + d);
+      return {{
+        month: base.getUTCMonth() + 1,
+        day: base.getUTCDate(),
+        weekday: (base.getUTCDay() + 6) % 7  // JS Sun=0 → Mon=0
+      }};
+    }}
+
+    function inMonthRange(month, day, ms, me) {{
+      function key(m, d) {{ return m * 100 + d; }}
+      var k = key(month, day), a = key(ms[0], ms[1]), b = key(me[0], me[1]);
+      if (a <= b) return k >= a && k <= b;
+      return k >= a || k <= b;  // wraps year end
+    }}
+
+    function scheduleSoon(s, now) {{
+      var nowMin = now.hour * 60 + now.minute;
+      var horizonEnd = nowMin + 1440;  // +24h, in minutes from today's midnight
+      for (var d = 0; d <= 1; d++) {{
+        var dt = addDays(now, d);
+        if (s.weekdays.indexOf(dt.weekday) === -1) continue;
+        if (!inMonthRange(dt.month, dt.day, s.month_start, s.month_end)) continue;
+        var winStart = d * 1440 + s.start_min;
+        var winEnd = d * 1440 + s.end_min;
+        if (winEnd > nowMin && winStart < horizonEnd) return true;
+      }}
+      return false;
+    }}
+
+    function isCleaningSoon(cleaning) {{
+      if (!cleaning || !cleaning.length) return false;
+      var now = montrealNow();
+      for (var i = 0; i < cleaning.length; i++) {{
+        if (scheduleSoon(cleaning[i], now)) return true;
+      }}
+      return false;
+    }}
+
 {layers_init}
 
 {default_adds}
+
+    {cleaning_refresh_js}
 
     {legend_map_js}
     L.control.layers(null, {{
@@ -462,8 +594,14 @@ def _build_html_shell(
       var info = legendInfo[name];
       if (!info) return;
       var swatch = document.createElement('span');
-      swatch.className = 'legend-swatch ' + (info.isPoint ? 'legend-swatch-dot' : 'legend-swatch-line');
-      swatch.style.backgroundColor = info.color;
+      if (info.isCleaning) {{
+        swatch.className = 'legend-swatch legend-swatch-line';
+        swatch.style.background = 'repeating-linear-gradient(to right, '
+          + info.color + ' 0 4px, transparent 4px 8px)';
+      }} else {{
+        swatch.className = 'legend-swatch ' + (info.isPoint ? 'legend-swatch-dot' : 'legend-swatch-line');
+        swatch.style.backgroundColor = info.color;
+      }}
       span.parentNode.insertBefore(swatch, span);
     }});
 
@@ -823,6 +961,18 @@ def build_map(
                 "color": color,
                 "default_on": default_on,
             })
+
+    # Cleaning overlay (off by default; JS filters to the next 24h)
+    cleaning_dest = data_dir / "cleaning.geojson"
+    if _export_cleaning_geojson(intervals_wgs, cleaning_dest):
+        layers.append({
+            "var": "layer_cleaning",
+            "file": "cleaning.geojson",
+            "name": "Cleaning ≤24h",
+            "color": "#000",
+            "default_on": False,
+            "is_cleaning": True,
+        })
 
     # Export poles GeoJSON (off by default), excluding DEUX COTES copies
     original_signs = signs_df

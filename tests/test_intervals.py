@@ -748,6 +748,92 @@ class TestMeterIntegration:
         assert len(intervals_none) == len(intervals_default)
 
 
+class TestCleaningAttachment:
+    """Cleaning schedules attach to intervals without changing category."""
+
+    def test_cleaning_attaches_and_keeps_free(self) -> None:
+        roads = _make_road(length=100)
+        signs = _make_snapped_signs([{
+            "POTEAU_ID_POT": 1,
+            "projection_distance": 50.0,
+            "side": "right",
+            "ID_TRC": 1,
+            "DESCRIPTION_RPA": "\\P 08h-09h MAR. 1 AVRIL AU 1 DEC.",
+            "FLECHE_PAN": 0,
+            "sign_category": STREET_CLEANING,
+            "is_restrictive": False,
+            "NOM_VOIE": "Rue Test",
+        }])
+        intervals = reconstruct_intervals(signs, roads)
+        right = intervals[intervals["side"] == "right"]
+        assert all(right["category"] == FREE)
+        # The whole side carries a parsed schedule.
+        assert right["cleaning_text"].str.contains("Cleaning: Tue").any()
+        with_sched = right[right["cleaning"].apply(len) > 0]
+        assert not with_sched.empty
+
+    def test_directional_cleaning_splits_side(self) -> None:
+        roads = _make_road(length=100)
+        signs = _make_snapped_signs([{
+            "POTEAU_ID_POT": 1,
+            "projection_distance": 50.0,
+            "side": "right",
+            "ID_TRC": 1,
+            "DESCRIPTION_RPA": "\\P 08h-09h MAR. 1 AVRIL AU 1 DEC.",
+            "FLECHE_PAN": 2,  # right side: 2=forward → applies 50–100 only
+            "sign_category": STREET_CLEANING,
+            "is_restrictive": False,
+            "NOM_VOIE": "Rue Test",
+        }])
+        intervals = reconstruct_intervals(signs, roads)
+        right = intervals[intervals["side"] == "right"]
+        cleaned = right[right["cleaning"].apply(len) > 0]
+        assert len(cleaned) == 1
+        assert cleaned.iloc[0]["start_dist"] >= 49.0
+        # The near-intersection half has no cleaning.
+        uncleaned = right[right["cleaning"].apply(len) == 0]
+        assert not uncleaned.empty
+
+    def test_unparseable_cleaning_falls_back_to_raw(self) -> None:
+        roads = _make_road(length=100)
+        raw = "\\P 08h-09h 1ER ET 3E MER. 1 AVRIL AU 1 DEC."
+        signs = _make_snapped_signs([{
+            "POTEAU_ID_POT": 1,
+            "projection_distance": 50.0,
+            "side": "right",
+            "ID_TRC": 1,
+            "DESCRIPTION_RPA": raw,
+            "FLECHE_PAN": 0,
+            "sign_category": STREET_CLEANING,
+            "is_restrictive": False,
+            "NOM_VOIE": "Rue Test",
+        }])
+        intervals = reconstruct_intervals(signs, roads)
+        right = intervals[intervals["side"] == "right"]
+        # Raw text shows in cleaning_text, but no structured schedule.
+        assert right["cleaning_text"].str.contains("1ER ET 3E").any()
+        assert all(right["cleaning"].apply(len) == 0)
+
+    def test_non_cleaning_intervals_have_empty_cleaning(self) -> None:
+        roads = _make_road(length=100)
+        signs = _make_snapped_signs([{
+            "POTEAU_ID_POT": 1,
+            "projection_distance": 50.0,
+            "side": "right",
+            "ID_TRC": 1,
+            "DESCRIPTION_RPA": "P",
+            "FLECHE_PAN": 0,
+            "sign_category": UNRESTRICTED,
+            "is_restrictive": False,
+            "NOM_VOIE": "Rue Test",
+        }])
+        intervals = reconstruct_intervals(signs, roads)
+        assert "cleaning" in intervals.columns
+        assert "cleaning_text" in intervals.columns
+        assert all(intervals["cleaning"].apply(len) == 0)
+        assert all(intervals["cleaning_text"] == "")
+
+
 # ---------------------------------------------------------------------------
 # Crosswalk intersection trimming
 # ---------------------------------------------------------------------------
