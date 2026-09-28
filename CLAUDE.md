@@ -54,7 +54,7 @@ Tool configuration (pytest, ruff, mypy) lives in `pyproject.toml`.
 - **Gap filling**: unsigned road sides get `no_data`; short (<60m) connector segments on streets that have signed blocks also get `no_data`.
 - **Vectorized snapping** uses `shapely.line_locate_point` / `shapely.line_interpolate_point` + numpy cross product for city-wide performance.
 - **External GeoJSON**: map output is a lightweight HTML shell (~50 KB) that fetches per-category GeoJSON via `fetch()`, keeping total payload manageable at city scale.
-- **Tiles**: CARTO Positron via a Referer-restricted API key (free non-commercial tier). Tiles only load on the deployed GitHub Pages site. CARTO's terms forbid showing their map on a moving vehicle, so driving mode removes the basemap.
+- **Tiles**: CARTO Positron via Referer-restricted API keys (free non-commercial tier): one for GitHub Pages, one for localhost, chosen client-side by hostname. CARTO's terms forbid showing their map on a moving vehicle, so driving mode removes the basemap.
 - **GPS**: Leaflet LocateControl plugin for phone geolocation.
 - **Street cleaning**: cleaning signs are parsed into structured schedules at build time and attached to interval segments (without changing category). The "Cleaning ≤24h" overlay computes the next-24h window client-side in Montreal time and draws a black dashed line over affected segments.
 

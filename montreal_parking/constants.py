@@ -89,15 +89,14 @@ MAP_CENTER = [45.5017, -73.5673]
 MAP_ZOOM_DEFAULT = 12
 MAP_ZOOM_BOROUGH = 14
 
-# Tile provider: CARTO Positron. The key is public by necessity (sent with every
-# tile request) and is restricted in the CARTO dashboard to the GitHub Pages
-# Referer, so tiles only render on the deployed site. Free non-commercial tier
-# (5M requests/month); terms: https://carto.com/legal/basemap-terms/
-CARTO_API_KEY = "cb1_4230_1_1d4a60f9ba97ae2fec2f1a10"
-TILES_URL = (
-    "https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}{r}.png"
-    f"?key={CARTO_API_KEY}"
-)
+# Tile provider: CARTO Positron. Keys are public by necessity (sent with every
+# tile request); each is restricted in the CARTO dashboard by Referer, and CARTO
+# requires local hosts to be on a key of their own. The page picks the key from
+# its hostname. Free non-commercial tier (5M requests/month); terms:
+# https://carto.com/legal/basemap-terms/
+CARTO_API_KEY = "cb1_4230_1_1d4a60f9ba97ae2fec2f1a10"  # GitHub Pages
+CARTO_API_KEY_DEV = "cb1_4230_2_24b6cba2df4aa55caec0554f"  # localhost
+TILES_URL = "https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}{r}.png?key={key}"
 TILES_ATTR = (
     '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> '
     'contributors, &copy; <a href="https://carto.com/attribution/">CARTO</a>'
