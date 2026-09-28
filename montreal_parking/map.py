@@ -418,10 +418,9 @@ def _build_html_shell(
   <script src="https://unpkg.com/leaflet-control-geocoder@2.4.0/dist/Control.Geocoder.js"></script>
   <script>
     var map = L.map('map', {{preferCanvas: true}}).setView({center}, {zoom});
-    L.tileLayer('{TILES_URL}', {{
+    var baseLayer = L.tileLayer('{TILES_URL}', {{
       attribution: '{TILES_ATTR}',
-      maxZoom: 19,
-      subdomains: 'abcd'
+      maxZoom: 19
     }}).addTo(map);
 
     // GPS locate button
@@ -813,6 +812,8 @@ def _build_html_shell(
       rightBar.style.display = 'block';
       drivingPositions = [];
       locateControl.stop();
+      // CARTO's basemap terms forbid displaying their map on a moving vehicle
+      map.removeLayer(baseLayer);
       map.setZoom(17);
       if (!navigator.geolocation) return;
       drivingWatchId = navigator.geolocation.watchPosition(
@@ -829,6 +830,7 @@ def _build_html_shell(
       drivingMode = false;
       leftBar.style.display = 'none';
       rightBar.style.display = 'none';
+      baseLayer.addTo(map);
       if (drivingWatchId !== null) {{
         navigator.geolocation.clearWatch(drivingWatchId);
         drivingWatchId = null;
