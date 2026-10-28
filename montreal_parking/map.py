@@ -15,6 +15,8 @@ import shapely
 from montreal_parking import __version__
 from montreal_parking.cleaning import format_schedule, parse_cleaning
 from montreal_parking.constants import (
+    CARTO_API_KEY,
+    CARTO_API_KEY_DEV,
     COLOR_FREE,
     COLOR_NO_DATA,
     COLOR_PAID,
@@ -418,10 +420,11 @@ def _build_html_shell(
   <script src="https://unpkg.com/leaflet-control-geocoder@2.4.0/dist/Control.Geocoder.js"></script>
   <script>
     var map = L.map('map', {{preferCanvas: true}}).setView({center}, {zoom});
-    L.tileLayer('{TILES_URL}', {{
+    var isLocalHost = ['localhost', '127.0.0.1', '[::1]'].indexOf(location.hostname) !== -1;
+    var baseLayer = L.tileLayer('{TILES_URL}', {{
       attribution: '{TILES_ATTR}',
-      maxZoom: 19,
-      subdomains: 'abcd'
+      key: isLocalHost ? '{CARTO_API_KEY_DEV}' : '{CARTO_API_KEY}',
+      maxZoom: 19
     }}).addTo(map);
 
     // GPS locate button
@@ -813,6 +816,8 @@ def _build_html_shell(
       rightBar.style.display = 'block';
       drivingPositions = [];
       locateControl.stop();
+      // CARTO's basemap terms forbid displaying their map on a moving vehicle
+      map.removeLayer(baseLayer);
       map.setZoom(17);
       if (!navigator.geolocation) return;
       drivingWatchId = navigator.geolocation.watchPosition(
@@ -829,6 +834,7 @@ def _build_html_shell(
       drivingMode = false;
       leftBar.style.display = 'none';
       rightBar.style.display = 'none';
+      baseLayer.addTo(map);
       if (drivingWatchId !== null) {{
         navigator.geolocation.clearWatch(drivingWatchId);
         drivingWatchId = null;
